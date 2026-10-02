@@ -149,28 +149,63 @@ class MainActivity : AppCompatActivity() {
         }.start()
     }
 
+    /**
+     * targetSdk=28 走 legacy storage：运行时授予 READ/WRITE_EXTERNAL_STORAGE
+     * 即可直接以路径方式访问 /sdcard（游戏目录、rootfs.tar.gz、Proton 载荷）。
+     * Android 11+ 的“所有文件访问权限”作为兜底，不强制打断用户。
+     */
     private fun checkStoragePermissions() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            if (!Environment.isExternalStorageManager()) {
-                appendLog("[WARN] 建议授予所有文件访问权限，以便读取 /sdcard 游戏目录")
-                try {
-                    val intent = Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION).apply {
-                        data = Uri.parse("package:$packageName")
-                    }
-                    startActivity(intent)
-                } catch (e: Exception) {
-                    startActivity(Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION))
-                }
-            }
+        val needed = listOf(
+            Manifest.permission.READ_EXTERNAL_STORAGE,
+            Manifest.permission.WRITE_EXTERNAL_STORAGE
+        ).filter { checkSelfPermission(it) != PackageManager.PERMISSION_GRANTED }
+
+        if (needed.isNotEmpty()) {
+            appendLog("[WARN] 正在申请存储权限（用于读取 /sdcard 上的游戏与运行时包）...")
+            requestPermissions(needed.toTypedArray(), REQUEST_STORAGE)
         } else {
-            val needed = listOf(
-                Manifest.permission.READ_EXTERNAL_STORAGE,
-                Manifest.permission.WRITE_EXTERNAL_STORAGE
-            ).filter { checkSelfPermission(it) != PackageManager.PERMISSION_GRANTED }
-            if (needed.isNotEmpty()) {
-                appendLog("[WARN] 正在申请外部存储读取权限...")
-                requestPermissions(needed.toTypedArray(), REQUEST_STORAGE)
+            noteAllFilesAccess()
+        }
+    }
+
+    private fun noteAllFilesAccess() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && !Environment.isExternalStorageManager()) {
+            appendLog("[INFO] 可选：如需访问 /sdcard 全部目录，可在系统设置中开启“所有文件访问权限”")
+        }
+    }
+
+    private fun openAllFilesAccessSettings() {
+        try {
+            startActivity(
+                Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION).apply {
+                    data = Uri.parse("package:$packageName")
+                }
+            )
+        } catch (e: Exception) {
+            try {
+                startActivity(Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION))
+            } catch (ignored: Exception) {
             }
+        }
+    }
+
+    override fun onRequestPermissionsResult(
+        requestCode: Int,
+        permissions: Array<out String>,
+        grantResults: IntArray
+    ) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode != REQUEST_STORAGE) return
+
+        val granted = grantResults.isNotEmpty() &&
+            grantResults.all { it == PackageManager.PERMISSION_GRANTED }
+        if (granted) {
+            appendLog("[INFO] 存储权限已授予")
+            scanGames()
+            refreshDashboard()
+        } else {
+            appendLog("[WARN] 存储权限被拒绝，无法读取 /sdcard；尝试引导到“所有文件访问权限”设置页")
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) openAllFilesAccessSettings()
         }
     }
 
