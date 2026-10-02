@@ -185,6 +185,7 @@ Java_com_protondroid_NativeBridge_nativeSetSurface(JNIEnv *env, jobject /* this 
     if (surface != nullptr) {
         g_native_window = ANativeWindow_fromSurface(env, surface);
         if (g_native_window != nullptr) {
+            ANativeWindow_setBuffersGeometry(g_native_window, 0, 0, WINDOW_FORMAT_RGBA_8888);
             int32_t width = ANativeWindow_getWidth(g_native_window);
             int32_t height = ANativeWindow_getHeight(g_native_window);
             LOGI("ANativeWindow attached successfully! (Size: %dx%d)", width, height);
@@ -224,10 +225,14 @@ Java_com_protondroid_NativeBridge_nativeDrawTestPattern(JNIEnv *env, jobject /* 
         return JNI_FALSE;
     }
 
-    auto *pixels = static_cast<uint32_t *>(buffer.bits);
-    for (int y = 0; y < buffer.height; ++y) {
-        for (int x = 0; x < buffer.width; ++x) {
-            pixels[y * buffer.stride + x] = static_cast<uint32_t>(color);
+    if (buffer.bits != nullptr && buffer.stride > 0 && buffer.height > 0) {
+        auto *pixels = static_cast<uint32_t *>(buffer.bits);
+        int32_t safe_h = buffer.height;
+        int32_t safe_w = buffer.width;
+        for (int32_t y = 0; y < safe_h; ++y) {
+            for (int32_t x = 0; x < safe_w; ++x) {
+                pixels[y * buffer.stride + x] = static_cast<uint32_t>(color);
+            }
         }
     }
 

@@ -73,9 +73,6 @@ class GameViewActivity : AppCompatActivity(), SurfaceHolder.Callback {
         // 将底层 Surface 句柄传给 C++ NDK
         val attached = NativeBridge.nativeSetSurface(holder.surface)
         if (attached) {
-            // 绘制初始深蓝背景测试帧，验证直通渲染可用性
-            NativeBridge.nativeDrawTestPattern(0xFF101828.toInt())
-
             // 启动前台服务保活，并拉起 Proton 引擎
             if (gamePath.isNotEmpty()) {
                 ProtonForegroundService.startService(this, gamePath)
