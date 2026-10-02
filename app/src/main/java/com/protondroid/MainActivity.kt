@@ -61,9 +61,9 @@ class MainActivity : AppCompatActivity() {
 
         // 4. 事件监听
         btnInstallRuntime.setOnClickListener {
-            appendLog("[INFO] 开始安装 Proton 11 ARM64 私有沙箱运行时...")
+            appendLog("[INFO] 开始装配 Proton 11 ARM64 独立沙箱运行时...")
             btnInstallRuntime.isEnabled = false
-            installer.installFromTar(
+            installer.installStandaloneRuntime(
                 onProgress = { msg -> appendLog(msg) },
                 onComplete = { success ->
                     btnInstallRuntime.isEnabled = true
@@ -143,10 +143,10 @@ class MainActivity : AppCompatActivity() {
         // 运行时状态
         val installed = installer.isRuntimeInstalled()
         if (installed) {
-            tvRuntimeStatus.text = "Proton 核心: 已就绪 (/data/data/$packageName/files/runtime)"
+            tvRuntimeStatus.text = "Proton 核心: 独立沙箱已就绪 (/data/data/$packageName/files/rootfs)"
             tvRuntimeStatus.setTextColor(0xFF4CAF50.toInt())
         } else {
-            tvRuntimeStatus.text = "Proton 核心: 未安装 (点击下方按钮一键导入)"
+            tvRuntimeStatus.text = "Proton 核心: 未安装 (点击下方按钮一键装配)"
             tvRuntimeStatus.setTextColor(0xFFFF9800.toInt())
         }
     }
