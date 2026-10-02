@@ -5,6 +5,7 @@ import android.os.Handler
 import android.os.Looper
 import android.util.Log
 import com.protondroid.runtime.ProtonLayout
+import com.protondroid.runtime.ProtonRuntimeInstaller
 import com.protondroid.runtime.WinePrefix
 import java.io.File
 import java.text.SimpleDateFormat
