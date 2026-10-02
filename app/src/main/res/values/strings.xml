@@ -1,0 +1,9 @@
+<resources>
+    <string name="app_name">Proton Droid</string>
+    <string name="title_system_info">系统与硬件支持诊断</string>
+    <string name="title_game_launch">Windows 游戏执行</string>
+    <string name="btn_start_game">启动 Windows 游戏</string>
+    <string name="btn_stop_game">停止当前进程</string>
+    <string name="btn_check_env">刷新环境检测</string>
+    <string name="status_ready">就绪</string>
+</resources>

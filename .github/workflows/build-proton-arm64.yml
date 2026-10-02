@@ -1,0 +1,121 @@
+name: Build Proton 11 ARM64
+
+on:
+  workflow_dispatch:
+    inputs:
+      proton_branch:
+        description: "Proton 分支 (默认 proton_11.0)"
+        required: true
+        default: "proton_11.0"
+      build_name:
+        description: "自定义构建名称"
+        required: true
+        default: "proton-droid-arm64"
+
+# 限制并发，防止多次触发挤占资源
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-arm64:
+    name: Build Proton on Native Linux ARM64
+    # 必须是公开仓库，免费使用原生 ARM64 4-core Runner
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 360 # GitHub 最大 6 小时限制
+
+    steps:
+      - name: 检出本项目 (Proton-droid 核心脚本)
+        uses: actions/checkout@v4
+
+      - name: 深度清理磁盘空间 (腾出 40GB+ 空间)
+        run: |
+          echo "=== 正在清理 Runner 预装冗余组件 ==="
+          df -h
+          sudo rm -rf /usr/share/dotnet || true
+          sudo rm -rf /usr/local/lib/android || true
+          sudo rm -rf /opt/ghc || true
+          sudo rm -rf /usr/local/share/powershell || true
+          sudo rm -rf /usr/local/share/boost || true
+          sudo rm -rf /var/lib/docker/image || true
+          docker image prune -a -f || true
+          sudo apt-get clean || true
+          echo "=== 清理后磁盘可用空间 ==="
+          df -h
+
+      - name: 配置 10GB Swap 虚拟内存 (防止链接阶段 OOM)
+        run: |
+          echo "=== 配置 Swap 交换分区 ==="
+          sudo fallocate -l 10G /swapfile || sudo dd if=/dev/zero of=/swapfile bs=1M count=10240
+          sudo chmod 600 /swapfile
+          sudo mkswap /swapfile
+          sudo swapon /swapfile
+          free -h
+
+      - name: 浅克隆 Valve Proton 源码 (包含子模块)
+        run: |
+          echo "=== 高速浅克隆 Proton 源码 (分支: ${{ github.event.inputs.proton_branch }}) ==="
+          mkdir -p "$GITHUB_WORKSPACE/build-area"
+          cd "$GITHUB_WORKSPACE/build-area"
+          
+          git clone --depth 1 --recurse-submodules --shallow-submodules \
+            -b "${{ github.event.inputs.proton_branch }}" \
+            https://github.com/ValveSoftware/Proton.git proton-source
+
+      - name: 预拉取 Valve 官方 SteamRT4 ARM64 SDK 镜像
+        run: |
+          SDK_IMAGE="registry.gitlab.steamos.cloud/proton/steamrt4/sdk/arm64-llvm:4.0.20260331.220802-2"
+          echo "=== 正在拉取 SteamRT4 SDK 镜像: $SDK_IMAGE ==="
+          docker pull "$SDK_IMAGE"
+
+      - name: 配置与原生 ARM64 编译
+        run: |
+          cd "$GITHUB_WORKSPACE/build-area"
+          mkdir -p build && cd build
+          
+          echo "=== 执行配置脚本 (Target: arm64) ==="
+          ../proton-source/configure.sh \
+            --container-engine=docker \
+            --target-arch=arm64 \
+            --build-name="${{ github.event.inputs.build_name }}" \
+            --enable-ccache
+          
+          echo "=== 开始编译 (make -j4 redist) ==="
+          make -j4 redist
+
+      - name: 打包编译产物
+        id: package
+        run: |
+          cd "$GITHUB_WORKSPACE/build-area/build"
+          PKG_NAME="proton-droid-arm64-$(date +%Y%m%d).tar.gz"
+          echo "=== 打包 redist 产物为 $PKG_NAME ==="
+          tar -czvf "$GITHUB_WORKSPACE/$PKG_NAME" -C redist/ .
+          
+          echo "package_name=$PKG_NAME" >> $GITHUB_OUTPUT
+          echo "package_path=$GITHUB_WORKSPACE/$PKG_NAME" >> $GITHUB_OUTPUT
+          
+          echo "=== 产物打包完成 ==="
+          ls -lh "$GITHUB_WORKSPACE/$PKG_NAME"
+
+      - name: 上传产物到 GitHub Actions Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.package.outputs.package_name }}
+          path: ${{ steps.package.outputs.package_path }}
+          retention-days: 14
+
+      - name: 自动创建 GitHub Release 发行版
+        uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
+        with:
+          tag_name: "v1.0.0-arm64-${{ github.run_number }}"
+          name: "Proton 11 ARM64 Native Build #${{ github.run_number }}"
+          body: |
+            ### Proton 11 ARM64 原生构建产物
+            - **架构**: aarch64 (Linux native) + arm64ec (Windows PE DXVK/VKD3D)
+            - **集成组件**: Wine aarch64 + in-process FEX UnixLib + DXVK 2.x
+            - **适配平台**: Android (Mali G610 / Adreno) + Termux/X11
+            - **构建机器**: GitHub Actions `ubuntu-24.04-arm` (4-core ARM64)
+          files: ${{ steps.package.outputs.package_path }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
