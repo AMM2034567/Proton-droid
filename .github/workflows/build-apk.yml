@@ -29,12 +29,12 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
 
-      - name: 配置 Android SDK 与 NDK
-        uses: android-actions/setup-android@v3
-
-      - name: 安装 CMake 与指定 NDK 27
+      - name: 安装 NDK 27 与 CMake
         run: |
-          sdkmanager --install "ndk;27.2.12479018" "cmake;3.22.1"
+          echo "=== 接受 Android SDK 协议许可 ==="
+          yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses || true
+          echo "=== 安装指定 NDK 与 CMake ==="
+          $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --install "ndk;27.2.12479018" "cmake;3.22.1"
 
       - name: 赋予 gradlew 执行权限
         run: |
@@ -63,7 +63,7 @@ jobs:
               - 独立沙箱运行时管理（自动从 `/sdcard/Download/ProtonDroid/` 解包导入）
               - 前台保活服务（彻底免除 Android 14/15 缓存冻结）
               - 游戏快速扫描器
-            - **适配环境**: Android 9.0+ (ARM64)
+            - **安装要求**: Android 9.0+ (ARM64)
           files: app/build/outputs/apk/debug/app-debug.apk
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
