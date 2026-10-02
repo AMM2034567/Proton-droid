@@ -43,16 +43,16 @@ object WinePrefix {
             val guestRootPath = guestRoot.absolutePath.trimEnd('/')
 
             template.walkTopDown()
-                .onEnter { dir -> dir == template || !dir.isSymbolicLink }
+                .onEnter { dir -> dir == template || !Files.isSymbolicLink(dir.toPath()) }
                 .forEach { src ->
                     val relative = src.relativeTo(template).path
                     if (relative.isEmpty()) return@forEach
                     val dst = File(dest, relative)
 
                     when {
-                        src.isSymbolicLink -> {
-                            val link = src.readSymlink()
-                            if (link == null) {
+                        Files.isSymbolicLink(src.toPath()) -> {
+                            val link = Files.readSymbolicLink(src.toPath()).toString()
+                            if (link.isEmpty()) {
                                 onLog("[PFX] 跳过无法读取的符号链接: $relative")
                             } else {
                                 val hostTarget = (
@@ -67,7 +67,7 @@ object WinePrefix {
                                 }
 
                                 dst.parentFile?.mkdirs()
-                                if (dst.exists() || dst.isSymbolicLink) dst.delete()
+                                if (dst.exists() || Files.isSymbolicLink(dst.toPath())) dst.delete()
                                 Files.createSymbolicLink(
                                     Paths.get(dst.absolutePath),
                                     Paths.get(guestTarget)
@@ -96,7 +96,7 @@ object WinePrefix {
     private fun ensureDosDevice(prefix: File, name: String, target: String) {
         val link = File(prefix, "dosdevices/$name")
         link.parentFile?.mkdirs()
-        if (link.exists() || link.isSymbolicLink) return
+        if (link.exists() || Files.isSymbolicLink(link.toPath())) return
         try {
             Files.createSymbolicLink(Paths.get(link.absolutePath), Paths.get(target))
         } catch (ignored: Exception) {

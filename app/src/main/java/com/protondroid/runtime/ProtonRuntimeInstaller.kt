@@ -8,6 +8,7 @@ import java.io.File
 import java.io.FileOutputStream
 import java.net.HttpURLConnection
 import java.net.URL
+import java.nio.file.Files
 
 /**
  * 一键装配独立运行时：
@@ -28,6 +29,22 @@ class ProtonRuntimeInstaller(private val context: Context) {
     }
 
     fun isRuntimeInstalled(): Boolean = layout.isRuntimeInstalled()
+
+    /**
+     * 仅释放 / 修复 PRoot 工具链（约 320KB，来自 APK assets）。
+     * 启动前自愈用：即使 rootfs/Proton 载荷早已就位，工具链缺失或架构不对也能就地修好。
+     */
+    fun ensureToolchain(onProgress: (String) -> Unit = {}): Boolean {
+        return try {
+            layout.ensureDirs()
+            installProotToolchain(onProgress)
+            true
+        } catch (t: Throwable) {
+            Log.e(tag, "ensureToolchain failed", t)
+            onProgress("PRoot 工具链装配失败: ${t.message}")
+            false
+        }
+    }
 
     fun installStandaloneRuntime(
         onProgress: (String) -> Unit,
@@ -174,7 +191,7 @@ class ProtonRuntimeInstaller(private val context: Context) {
     private fun chmodExecutable(dir: File) {
         if (!dir.isDirectory) return
         dir.walkTopDown().forEach { file ->
-            if (file.isFile && !file.isSymbolicLink) {
+            if (file.isFile && !Files.isSymbolicLink(file.toPath())) {
                 file.setReadable(true, false)
                 file.setExecutable(true, false)
             }

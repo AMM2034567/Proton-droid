@@ -6,6 +6,8 @@ plugins {
 android {
     namespace = "com.protondroid"
     compileSdk = 35
+    // 显式指定 build-tools（AGP 8.5 默认 34.0.0），避免本机/CI 上工具链版本漂移
+    buildToolsVersion = "35.0.0"
 
     defaultConfig {
         applicationId = "com.protondroid"

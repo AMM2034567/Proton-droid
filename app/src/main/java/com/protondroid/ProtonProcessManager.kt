@@ -57,8 +57,12 @@ class ProtonProcessManager(private val context: Context) {
         }
 
         if (!layout.isToolchainReady()) {
-            report("错误: PRoot 工具链未就绪，请先点击“一键导入 / 重置 Proton 核心”")
-            return false
+            report("PRoot 工具链缺失或架构不符，正在自 APK 释放 aarch64 运行时...")
+            val installer = ProtonRuntimeInstaller(context)
+            if (!installer.ensureToolchain(::report) || !layout.isToolchainReady()) {
+                report("错误: PRoot 工具链未就绪，请先点击“一键导入 / 重置 Proton 核心”")
+                return false
+            }
         }
 
         val guestRoot = layout.resolveGuestRoot()
