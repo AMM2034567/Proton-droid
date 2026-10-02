@@ -1,6 +1,7 @@
 # Proton-droid 快速上手指南
 
 > 📌 开工前先看 [`docs/PROJECT_MEMORY.md`](PROJECT_MEMORY.md)：项目记忆（铁律、代码地图、构建/验证手册、显示层路线、正式版下载/发布链路与 TODO）。
+> ⚠️ 做较大改动后请**及时回写记忆**（判定标准与更新清单见该文件第 13 节）。
 >
 > 🚧 正式版方向：**App 内置下载运行时** —— 干净的 glibc rootfs 与编译好的 Proton 产物都走自己的
 > GitHub Release，用户装完 APK 无需手动往 `/sdcard` 拷任何东西（设计见记忆第 12 节）。下面第一~三步
