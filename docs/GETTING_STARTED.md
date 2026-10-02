@@ -1,5 +1,7 @@
 # Proton-droid 快速上手指南
 
+> 📌 开工前先看 [`docs/PROJECT_MEMORY.md`](PROJECT_MEMORY.md)：项目记忆（铁律、代码地图、构建/验证手册、显示层路线与 TODO）。
+
 欢迎使用 **Proton-droid**！本项目旨在将 Valve 官方的 **Proton 11（ARM64 + FEX + ARM64EC DXVK）** 移植并落地到 Android 设备上。
 
 ---
