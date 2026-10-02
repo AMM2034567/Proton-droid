@@ -73,6 +73,17 @@ jobs:
             -b "$BRANCH" \
             https://github.com/ValveSoftware/Proton.git proton-source
 
+          # 修复浅克隆缺失 tag 导致的 git describe 致命报错 (Error 128)
+          echo "=== 为子模块修补 git tag 防御 ==="
+          git -C proton-source tag -f proton-11.0-droid || true
+          if [ -d proton-source/FEX ]; then
+            git -C proton-source/FEX tag -f fex-v2503 || true
+          fi
+
+          # 为 Makefile.in 中的 git describe 加上容错参数
+          sed -i 's/git -C \$(SRCDIR)\/FEX describe --abbrev=7/git -C \$(SRCDIR)\/FEX describe --always --abbrev=7/g' proton-source/Makefile.in
+          sed -i 's/git describe --tags/git describe --tags --always || echo proton-11.0-arm64/g' proton-source/Makefile.in
+
       - name: 预拉取 Valve 官方 SteamRT4 ARM64 SDK 镜像
         run: |
           SDK_IMAGE="registry.gitlab.steamos.cloud/proton/steamrt4/sdk/arm64-llvm:4.0.20260331.220802-2"
