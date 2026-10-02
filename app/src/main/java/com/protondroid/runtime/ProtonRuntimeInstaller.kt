@@ -5,6 +5,9 @@ import android.os.Handler
 import android.os.Looper
 import android.util.Log
 import java.io.File
+import java.io.FileOutputStream
+import java.net.HttpURLConnection
+import java.net.URL
 
 class ProtonRuntimeInstaller(private val context: Context) {
 
@@ -31,17 +34,15 @@ class ProtonRuntimeInstaller(private val context: Context) {
         File(protonDir, "files/bin-arm64/wine")
     }
 
-    // 公共存储中的核心资源
-    val publicProotSource: File by lazy {
-        File("/sdcard/Download/ProtonDroid/proot")
-    }
+    // 本地缓存 / 公共存储检查路径
+    val publicProotSource: File by lazy { File("/sdcard/Download/ProtonDroid/proot") }
+    val publicRootfsSource: File by lazy { File("/sdcard/Download/ProtonDroid/rootfs.tar.gz") }
+    val publicProtonSource: File by lazy { File("/sdcard/Download/ProtonDroid/proton-droid-arm64.tar.gz") }
 
-    val publicRootfsSource: File by lazy {
-        File("/sdcard/Download/ProtonDroid/rootfs.tar.gz")
-    }
-
-    val publicProtonSource: File by lazy {
-        File("/sdcard/Download/ProtonDroid/proton-droid-arm64.tar.gz")
+    // 官方云端下载端点
+    companion object {
+        const val URL_PROOT = "https://github.com/proot-me/proot/releases/download/v5.4.1/proot"
+        const val URL_PROTON_CORE = "https://github.com/AMM2034567/Proton-droid/releases/download/v1.0.0-arm64-3/proton-droid-arm64-20261002.tar.gz"
     }
 
     fun isRuntimeInstalled(): Boolean {
@@ -54,72 +55,111 @@ class ProtonRuntimeInstaller(private val context: Context) {
     ) {
         Thread {
             try {
-                // 1. 部署 PRoot 执行器
-                postProgress(onProgress, "[1/3] 正在部署原生 PRoot 执行器...")
-                if (!publicProotSource.exists()) {
-                    postProgress(onProgress, "错误: 未找到 ${publicProotSource.absolutePath}")
-                    postComplete(onComplete, false)
-                    return@Thread
-                }
-                binDir.mkdirs()
-                publicProotSource.copyTo(prootExecutable, overwrite = true)
-                ProcessBuilder("chmod", "755", prootExecutable.absolutePath).start().waitFor()
-
-                // 2. 部署 glibc Rootfs 基础运行环境
-                if (!File(rootfsDir, "lib/ld-linux-aarch64.so.1").exists()) {
-                    postProgress(onProgress, "[2/3] 正在解压 glibc Rootfs 运行环境 (约需 10 秒)...")
-                    if (!publicRootfsSource.exists()) {
-                        postProgress(onProgress, "提示: 请先在 Termux 中执行 export_rootfs.sh 导出基础根文件系统！")
-                        postComplete(onComplete, false)
-                        return@Thread
+                // 1. 确保 PRoot 执行器就位
+                postProgress(onProgress, "[1/3] 正在装配 PRoot 原生执行器...")
+                if (!prootExecutable.exists() || !prootExecutable.canExecute()) {
+                    if (publicProotSource.exists()) {
+                        publicProotSource.copyTo(prootExecutable, overwrite = true)
+                    } else {
+                        postProgress(onProgress, "从云端下载 PRoot 静态二进制 (1.8MB)...")
+                        downloadWithProgress(URL_PROOT, prootExecutable) { pct ->
+                            postProgress(onProgress, "下载 PRoot: $pct%")
+                        }
                     }
-                    rootfsDir.mkdirs()
-                    val proc = ProcessBuilder(
-                        "toybox", "tar", "-xzf",
-                        publicRootfsSource.absolutePath,
-                        "-C", rootfsDir.absolutePath
-                    ).redirectErrorStream(true).start()
-                    if (proc.waitFor() != 0) {
-                        postProgress(onProgress, "Rootfs 解压失败！")
+                    ProcessBuilder("chmod", "755", prootExecutable.absolutePath).start().waitFor()
+                }
+
+                // 2. 确保 glibc Rootfs 基础运行环境就位
+                val ldLinux = File(rootfsDir, "lib/ld-linux-aarch64.so.1")
+                if (!ldLinux.exists()) {
+                    postProgress(onProgress, "[2/3] 正在装配 glibc Rootfs 基础运行环境...")
+                    if (publicRootfsSource.exists()) {
+                        postProgress(onProgress, "正在解压本地 rootfs.tar.gz (约需 10 秒)...")
+                        extractTarGz(publicRootfsSource, rootfsDir)
+                    } else {
+                        postProgress(onProgress, "未找到本地 rootfs.tar.gz，请先通过 Termux 快速导出或放置于 /sdcard/Download/ProtonDroid/")
                         postComplete(onComplete, false)
                         return@Thread
                     }
                 } else {
-                    postProgress(onProgress, "[2/3] glibc Rootfs 基础环境已就绪！")
+                    postProgress(onProgress, "[2/3] glibc Rootfs 基础运行库已就位！")
                 }
 
-                // 3. 部署 Proton 11 ARM64 游戏兼容核心
-                postProgress(onProgress, "[3/3] 正在解压 Proton 11 ARM64 核心到 /opt/proton (约需 20 秒)...")
-                protonDir.mkdirs()
+                // 3. 确保 Proton 11 ARM64 游戏兼容核心就位
                 if (!wineExecutable.exists()) {
-                    if (!publicProtonSource.exists()) {
-                        postProgress(onProgress, "错误: 未找到 ${publicProtonSource.absolutePath}")
-                        postComplete(onComplete, false)
-                        return@Thread
-                    }
-                    val proc = ProcessBuilder(
-                        "toybox", "tar", "-xzf",
-                        publicProtonSource.absolutePath,
-                        "-C", protonDir.absolutePath
-                    ).redirectErrorStream(true).start()
-                    if (proc.waitFor() != 0) {
-                        postProgress(onProgress, "Proton 核心解压失败！")
-                        postComplete(onComplete, false)
-                        return@Thread
+                    postProgress(onProgress, "[3/3] 正在解压 Proton 11 ARM64 核心到 /opt/proton (约需 20 秒)...")
+                    protonDir.mkdirs()
+                    if (publicProtonSource.exists()) {
+                        extractTarGz(publicProtonSource, protonDir)
+                    } else {
+                        postProgress(onProgress, "从云端下载 Proton 11 ARM64 核心 (562MB)...")
+                        downloadWithProgress(URL_PROTON_CORE, publicProtonSource) { pct ->
+                            postProgress(onProgress, "下载 Proton 核心: $pct%")
+                        }
+                        extractTarGz(publicProtonSource, protonDir)
                     }
                 }
 
                 // 权限修复
                 ProcessBuilder("chmod", "-R", "755", File(protonDir, "files/bin-arm64").absolutePath).start().waitFor()
 
-                postProgress(onProgress, "🎉 Proton-droid 独立沙箱运行时全量装配就绪！")
+                postProgress(onProgress, "🎉 Proton-droid 独立沙箱运行时全量装配成功！")
                 postComplete(onComplete, true)
             } catch (e: Exception) {
                 Log.e(tag, "Install standalone runtime failed", e)
-                postProgress(onProgress, "安装异常: ${e.message}")
+                postProgress(onProgress, "装配异常: ${e.message}")
                 postComplete(onComplete, false)
             }
         }.start()
+    }
+
+    private fun extractTarGz(tarFile: File, targetDir: File) {
+        targetDir.mkdirs()
+        val proc = ProcessBuilder(
+            "toybox", "tar", "-xzf",
+            tarFile.absolutePath,
+            "-C", targetDir.absolutePath
+        ).redirectErrorStream(true).start()
+        val code = proc.waitFor()
+        if (code != 0) {
+            throw RuntimeException("tar -xzf failed with code $code")
+        }
+    }
+
+    private fun downloadWithProgress(urlStr: String, dest: File, onPercent: (Int) -> Unit) {
+        var connection = URL(urlStr).openConnection() as HttpURLConnection
+        connection.instanceFollowRedirects = true
+        connection.connectTimeout = 15000
+        connection.readTimeout = 30000
+
+        var responseCode = connection.responseCode
+        if (responseCode == HttpURLConnection.HTTP_MOVED_TEMP || responseCode == HttpURLConnection.HTTP_MOVED_PERM) {
+            val newUrl = connection.getHeaderField("Location")
+            connection = URL(newUrl).openConnection() as HttpURLConnection
+        }
+
+        val totalBytes = connection.contentLengthLong
+        var downloadedBytes = 0L
+
+        dest.parentFile?.mkdirs()
+        connection.inputStream.use { input ->
+            FileOutputStream(dest).use { output ->
+                val buffer = ByteArray(64 * 1024)
+                var bytesRead: Int
+                var lastPct = -1
+                while (input.read(buffer).also { bytesRead = it } != -1) {
+                    output.write(buffer, 0, bytesRead)
+                    downloadedBytes += bytesRead
+                    if (totalBytes > 0) {
+                        val pct = ((downloadedBytes * 100) / totalBytes).toInt()
+                        if (pct != lastPct && pct % 5 == 0) {
+                            lastPct = pct
+                            mainHandler.post { onPercent(pct) }
+                        }
+                    }
+                }
+            }
+        }
     }
 
     private fun postProgress(callback: (String) -> Unit, msg: String) {
