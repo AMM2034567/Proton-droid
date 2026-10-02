@@ -12,6 +12,10 @@ on:
         required: true
         default: "proton-droid-arm64"
 
+# 赋予创建 Release 和上传产物的写入权限
+permissions:
+  contents: write
+
 # 限制并发，防止多次触发挤占资源
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -20,7 +24,7 @@ concurrency:
 jobs:
   build-arm64:
     name: Build Proton on Native Linux ARM64
-    # 必须是公开仓库，免费使用原生 ARM64 4-core Runner
+    # 必须是公开仓库，免费使用原生 4-core ARM64 Runner (145GB SSD / 16GB RAM)
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 360 # GitHub 最大 6 小时限制
 
@@ -28,7 +32,7 @@ jobs:
       - name: 检出本项目 (Proton-droid 核心脚本)
         uses: actions/checkout@v4
 
-      - name: 深度清理磁盘空间 (腾出 40GB+ 空间)
+      - name: 深度清理磁盘空间 (腾出 100GB+ 空间)
         run: |
           echo "=== 正在清理 Runner 预装冗余组件 ==="
           df -h
@@ -37,29 +41,36 @@ jobs:
           sudo rm -rf /opt/ghc || true
           sudo rm -rf /usr/local/share/powershell || true
           sudo rm -rf /usr/local/share/boost || true
-          sudo rm -rf /var/lib/docker/image || true
           docker image prune -a -f || true
           sudo apt-get clean || true
           echo "=== 清理后磁盘可用空间 ==="
           df -h
 
-      - name: 配置 10GB Swap 虚拟内存 (防止链接阶段 OOM)
+      - name: 配置额外 10GB Swap 虚拟内存 (防止链接期 OOM)
         run: |
           echo "=== 配置 Swap 交换分区 ==="
-          sudo fallocate -l 10G /swapfile || sudo dd if=/dev/zero of=/swapfile bs=1M count=10240
-          sudo chmod 600 /swapfile
-          sudo mkswap /swapfile
-          sudo swapon /swapfile
+          # 使用独立 swapfile_extra，避免与已有 swapfile 发生冲突
+          sudo fallocate -l 10G /swapfile_extra || sudo dd if=/dev/zero of=/swapfile_extra bs=1M count=10240
+          sudo chmod 600 /swapfile_extra
+          sudo mkswap /swapfile_extra
+          sudo swapon /swapfile_extra
           free -h
 
-      - name: 浅克隆 Valve Proton 源码 (包含子模块)
+      - name: 安装宿主机必要构建工具
         run: |
-          echo "=== 高速浅克隆 Proton 源码 (分支: ${{ github.event.inputs.proton_branch }}) ==="
+          sudo apt-get update
+          sudo apt-get install -y make rsync git curl
+
+      - name: 浅克隆 Valve Proton 源码 (包含完整子模块)
+        run: |
+          BRANCH="${{ github.event.inputs.proton_branch || 'proton_11.0' }}"
+          echo "=== 高速浅克隆 Proton 源码 (分支: $BRANCH) ==="
           mkdir -p "$GITHUB_WORKSPACE/build-area"
           cd "$GITHUB_WORKSPACE/build-area"
           
+          # 使用浅克隆大幅降低传输与磁盘占用
           git clone --depth 1 --recurse-submodules --shallow-submodules \
-            -b "${{ github.event.inputs.proton_branch }}" \
+            -b "$BRANCH" \
             https://github.com/ValveSoftware/Proton.git proton-source
 
       - name: 预拉取 Valve 官方 SteamRT4 ARM64 SDK 镜像
@@ -68,8 +79,9 @@ jobs:
           echo "=== 正在拉取 SteamRT4 SDK 镜像: $SDK_IMAGE ==="
           docker pull "$SDK_IMAGE"
 
-      - name: 配置与原生 ARM64 编译
+      - name: 配置与原生 ARM64 编译 (Docker 驱动)
         run: |
+          BUILD_NAME="${{ github.event.inputs.build_name || 'proton-droid-arm64' }}"
           cd "$GITHUB_WORKSPACE/build-area"
           mkdir -p build && cd build
           
@@ -77,7 +89,7 @@ jobs:
           ../proton-source/configure.sh \
             --container-engine=docker \
             --target-arch=arm64 \
-            --build-name="${{ github.event.inputs.build_name }}" \
+            --build-name="$BUILD_NAME" \
             --enable-ccache
           
           echo "=== 开始编译 (make -j4 redist) ==="
