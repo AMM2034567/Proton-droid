@@ -1,6 +1,8 @@
 package com.protondroid
 
+import android.Manifest
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -12,6 +14,7 @@ import android.widget.EditText
 import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
+import com.protondroid.runtime.ProtonLayout
 import com.protondroid.runtime.ProtonRuntimeInstaller
 import com.protondroid.service.ProtonForegroundService
 import com.protondroid.ui.GameViewActivity
@@ -20,6 +23,7 @@ import java.io.File
 class MainActivity : AppCompatActivity() {
 
     private lateinit var installer: ProtonRuntimeInstaller
+    private lateinit var processManager: ProtonProcessManager
     private lateinit var tvStatusLog: TextView
     private lateinit var tvPageSize: TextView
     private lateinit var tvGpuStatus: TextView
@@ -28,14 +32,21 @@ class MainActivity : AppCompatActivity() {
     private lateinit var etGamePath: EditText
     private lateinit var btnInstallRuntime: Button
     private lateinit var btnScanGames: Button
+    private lateinit var btnSelfTest: Button
     private lateinit var btnLaunchGame: Button
     private lateinit var btnStopGame: Button
+
+    private val statusListener: (String) -> Unit = { message ->
+        runOnUiThread { appendLog(message) }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
 
         installer = ProtonRuntimeInstaller(this)
+        processManager = ProtonProcessManager(this)
+        processManager.setStatusListener { ProtonStatus.publish(it) }
 
         tvStatusLog = findViewById(R.id.tv_status_log)
         tvPageSize = findViewById(R.id.tv_page_size)
@@ -45,6 +56,7 @@ class MainActivity : AppCompatActivity() {
         etGamePath = findViewById(R.id.et_game_path)
         btnInstallRuntime = findViewById(R.id.btn_install_runtime)
         btnScanGames = findViewById(R.id.btn_scan_games)
+        btnSelfTest = findViewById(R.id.btn_self_test)
         btnLaunchGame = findViewById(R.id.btn_launch_game)
         btnStopGame = findViewById(R.id.btn_stop_game)
 
@@ -70,6 +82,7 @@ class MainActivity : AppCompatActivity() {
                     refreshDashboard()
                     if (success) {
                         Toast.makeText(this, "Proton 核心安装成功！", Toast.LENGTH_SHORT).show()
+                        runSelfTestAsync()
                     } else {
                         Toast.makeText(this, "Proton 核心安装失败，请查看日志！", Toast.LENGTH_LONG).show()
                     }
@@ -79,6 +92,10 @@ class MainActivity : AppCompatActivity() {
 
         btnScanGames.setOnClickListener {
             scanGames()
+        }
+
+        btnSelfTest.setOnClickListener {
+            runSelfTestAsync()
         }
 
         btnLaunchGame.setOnClickListener {
@@ -101,24 +118,58 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    override fun onStart() {
+        super.onStart()
+        ProtonStatus.register(statusListener)
+    }
+
+    override fun onStop() {
+        ProtonStatus.unregister(statusListener)
+        super.onStop()
+    }
+
     override fun onResume() {
         super.onResume()
         refreshDashboard()
     }
 
+    /**
+     * 运行时自检：真正 fork/exec 一次 `proot --version`。
+     * Android 10+ 的 W^X/SELinux 限制会让私有目录内的二进制无法执行，
+     * 自检能立刻把这类根因暴露出来。
+     */
+    private fun runSelfTestAsync() {
+        appendLog("[自检] 正在验证 PRoot 工具链可执行性...")
+        Thread {
+            val result = processManager.prootSelfTest()
+            runOnUiThread {
+                appendLog("[自检] $result")
+                appendLog("[自检] 运行日志尾部:\n" + processManager.readLogTail(15))
+            }
+        }.start()
+    }
+
     private fun checkStoragePermissions() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             if (!Environment.isExternalStorageManager()) {
-                appendLog("[WARN] 需要所有文件访问权限以读取 /sdcard 游戏安装包")
+                appendLog("[WARN] 建议授予所有文件访问权限，以便读取 /sdcard 游戏目录")
                 try {
                     val intent = Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION).apply {
                         data = Uri.parse("package:$packageName")
                     }
                     startActivity(intent)
                 } catch (e: Exception) {
-                    val intent = Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION)
-                    startActivity(intent)
+                    startActivity(Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION))
                 }
+            }
+        } else {
+            val needed = listOf(
+                Manifest.permission.READ_EXTERNAL_STORAGE,
+                Manifest.permission.WRITE_EXTERNAL_STORAGE
+            ).filter { checkSelfPermission(it) != PackageManager.PERMISSION_GRANTED }
+            if (needed.isNotEmpty()) {
+                appendLog("[WARN] 正在申请外部存储读取权限...")
+                requestPermissions(needed.toTypedArray(), REQUEST_STORAGE)
             }
         }
     }
@@ -143,16 +194,21 @@ class MainActivity : AppCompatActivity() {
         // 运行时状态
         val installed = installer.isRuntimeInstalled()
         if (installed) {
-            tvRuntimeStatus.text = "Proton 核心: 独立沙箱已就绪 (/data/data/$packageName/files/rootfs)"
+            val layout = ProtonLayout(this)
+            val guestRoot = layout.resolveGuestRoot()
+            tvRuntimeStatus.text = "Proton 核心: 已就绪 (guest root: ${guestRoot?.absolutePath ?: "?"})"
             tvRuntimeStatus.setTextColor(0xFF4CAF50.toInt())
         } else {
             tvRuntimeStatus.text = "Proton 核心: 未安装 (点击下方按钮一键装配)"
             tvRuntimeStatus.setTextColor(0xFFFF9800.toInt())
         }
+
+        val x11 = NativeBridge.checkX11Display(0)
+        tvGpuStatus.append(if (x11) "\nX11 显示 :0: 已连接" else "\nX11 显示 :0: 未检测到 (需 Termux-X11)")
     }
 
     private fun scanGames() {
-        val gamesDir = File("/sdcard/Download/ProtonDroid/games")
+        val gamesDir = File(ProtonLayout.PUBLIC_GAMES_DIR)
         if (!gamesDir.exists()) {
             gamesDir.mkdirs()
         }
@@ -175,12 +231,16 @@ class MainActivity : AppCompatActivity() {
             etGamePath.setText(primaryGame.absolutePath)
             appendLog("[SCAN] 自动选中目标: ${primaryGame.name} (${primaryGame.absolutePath})")
         } else {
-            etGamePath.setText("/sdcard/Download/ProtonDroid/games/goose/GooseDesktop.exe")
+            appendLog("[SCAN] 未在 ${ProtonLayout.PUBLIC_GAMES_DIR} 下发现 .exe")
         }
     }
 
     private fun appendLog(msg: String) {
         val current = tvStatusLog.text.toString()
         tvStatusLog.text = "$current\n$msg"
+    }
+
+    companion object {
+        private const val REQUEST_STORAGE = 1001
     }
 }

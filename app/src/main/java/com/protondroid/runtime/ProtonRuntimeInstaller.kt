@@ -9,45 +9,25 @@ import java.io.FileOutputStream
 import java.net.HttpURLConnection
 import java.net.URL
 
+/**
+ * 一键装配独立运行时：
+ *  1. 从 APK assets 释放 aarch64 PRoot 工具链（proot/loader/libtalloc/libandroid-shmem）
+ *  2. 解压 / 定位 glibc guest rootfs（兼容 `rootfs/` 与 `rootfs/debian/rootfs/` 两种层次）
+ *  3. 把 Proton 11 ARM64 载荷放到 **guest 根内部** 的 /opt/proton
+ *  4. 初始化 wine prefix
+ */
 class ProtonRuntimeInstaller(private val context: Context) {
 
     private val tag = "ProtonInstaller"
+    private val layout = ProtonLayout(context)
     private val mainHandler = Handler(Looper.getMainLooper())
 
-    val binDir: File by lazy {
-        File(context.filesDir, "bin").apply { mkdirs() }
-    }
-
-    val rootfsDir: File by lazy {
-        File(context.filesDir, "rootfs").apply { mkdirs() }
-    }
-
-    val prootExecutable: File by lazy {
-        File(binDir, "proot")
-    }
-
-    val protonDir: File by lazy {
-        File(rootfsDir, "opt/proton")
-    }
-
-    val wineExecutable: File by lazy {
-        File(protonDir, "files/bin-arm64/wine")
-    }
-
-    // 本地缓存 / 公共存储检查路径
-    val publicProotSource: File by lazy { File("/sdcard/Download/ProtonDroid/proot") }
-    val publicRootfsSource: File by lazy { File("/sdcard/Download/ProtonDroid/rootfs.tar.gz") }
-    val publicProtonSource: File by lazy { File("/sdcard/Download/ProtonDroid/proton-droid-arm64.tar.gz") }
-
-    // 官方云端下载端点
     companion object {
-        const val URL_PROOT = "https://github.com/proot-me/proot/releases/download/v5.4.1/proot"
-        const val URL_PROTON_CORE = "https://github.com/AMM2034567/Proton-droid/releases/download/v1.0.0-arm64-3/proton-droid-arm64-20261002.tar.gz"
+        const val URL_PROTON_CORE =
+            "https://github.com/AMM2034567/Proton-droid/releases/download/v1.0.0-arm64-3/proton-droid-arm64-20261002.tar.gz"
     }
 
-    fun isRuntimeInstalled(): Boolean {
-        return prootExecutable.exists() && prootExecutable.canExecute() && wineExecutable.exists()
-    }
+    fun isRuntimeInstalled(): Boolean = layout.isRuntimeInstalled()
 
     fun installStandaloneRuntime(
         onProgress: (String) -> Unit,
@@ -55,63 +35,128 @@ class ProtonRuntimeInstaller(private val context: Context) {
     ) {
         Thread {
             try {
-                // 1. 确保 PRoot 执行器就位
-                postProgress(onProgress, "[1/3] 正在装配 PRoot 原生执行器...")
-                if (!prootExecutable.exists() || !prootExecutable.canExecute()) {
-                    if (publicProotSource.exists()) {
-                        publicProotSource.copyTo(prootExecutable, overwrite = true)
-                    } else {
-                        postProgress(onProgress, "从云端下载 PRoot 静态二进制 (1.8MB)...")
-                        downloadWithProgress(URL_PROOT, prootExecutable) { pct ->
-                            postProgress(onProgress, "下载 PRoot: $pct%")
-                        }
-                    }
-                    ProcessBuilder("chmod", "755", prootExecutable.absolutePath).start().waitFor()
-                }
+                layout.ensureDirs()
 
-                // 2. 确保 glibc Rootfs 基础运行环境就位
-                val ldLinux = File(rootfsDir, "lib/ld-linux-aarch64.so.1")
-                if (!ldLinux.exists()) {
-                    postProgress(onProgress, "[2/3] 正在装配 glibc Rootfs 基础运行环境...")
-                    if (publicRootfsSource.exists()) {
-                        postProgress(onProgress, "正在解压本地 rootfs.tar.gz (约需 10 秒)...")
-                        extractTarGz(publicRootfsSource, rootfsDir)
-                    } else {
-                        postProgress(onProgress, "未找到本地 rootfs.tar.gz，请先通过 Termux 快速导出或放置于 /sdcard/Download/ProtonDroid/")
-                        postComplete(onComplete, false)
-                        return@Thread
-                    }
+                installProotToolchain(onProgress)
+                val guestRoot = ensureGuestRoot(onProgress)
+                    ?: throw IllegalStateException(
+                        "未能定位 glibc rootfs。请把 rootfs.tar.gz 放到 ${ProtonLayout.PUBLIC_ROOTFS_TAR} 后重试。"
+                    )
+                onProgress("[2/3] guest 根目录: ${guestRoot.absolutePath}")
+
+                ensureProtonPayload(guestRoot, onProgress)
+
+                WinePrefix.ensure(layout, guestRoot, onProgress)
+
+                if (layout.isRuntimeInstalled()) {
+                    onProgress("🎉 Proton-droid 独立沙箱运行时全量装配成功！")
+                    onProgress("proot: aarch64 ✅ (${layout.prootExecutable.absolutePath})")
+                    postComplete(onComplete, true)
                 } else {
-                    postProgress(onProgress, "[2/3] glibc Rootfs 基础运行库已就位！")
+                    throw IllegalStateException("装配后校验失败：未找到 ${layout.wineExecutable(guestRoot).absolutePath}")
                 }
-
-                // 3. 确保 Proton 11 ARM64 游戏兼容核心就位
-                if (!wineExecutable.exists()) {
-                    postProgress(onProgress, "[3/3] 正在解压 Proton 11 ARM64 核心到 /opt/proton (约需 20 秒)...")
-                    protonDir.mkdirs()
-                    if (publicProtonSource.exists()) {
-                        extractTarGz(publicProtonSource, protonDir)
-                    } else {
-                        postProgress(onProgress, "从云端下载 Proton 11 ARM64 核心 (562MB)...")
-                        downloadWithProgress(URL_PROTON_CORE, publicProtonSource) { pct ->
-                            postProgress(onProgress, "下载 Proton 核心: $pct%")
-                        }
-                        extractTarGz(publicProtonSource, protonDir)
-                    }
-                }
-
-                // 权限修复
-                ProcessBuilder("chmod", "-R", "755", File(protonDir, "files/bin-arm64").absolutePath).start().waitFor()
-
-                postProgress(onProgress, "🎉 Proton-droid 独立沙箱运行时全量装配成功！")
-                postComplete(onComplete, true)
-            } catch (e: Exception) {
-                Log.e(tag, "Install standalone runtime failed", e)
-                postProgress(onProgress, "装配异常: ${e.message}")
+            } catch (t: Throwable) {
+                Log.e(tag, "Install standalone runtime failed", t)
+                postProgress(onProgress, "装配异常: ${t.message}")
                 postComplete(onComplete, false)
             }
         }.start()
     }
+
+    // ------------------------------------------------------------------
+    // 1. PRoot 工具链
+    // ------------------------------------------------------------------
+
+    private fun installProotToolchain(onProgress: (String) -> Unit) {
+        onProgress("[1/3] 正在装配 aarch64 PRoot 工具链...")
+        val assetNames = context.assets.list(ProtonLayout.TOOLCHAIN_ASSET_DIR)?.toSet() ?: emptySet()
+        val publicDir = File(ProtonLayout.PUBLIC_TOOLCHAIN_DIR)
+
+        for (target in layout.toolchainFiles) {
+            val needsInstall = !target.isFile || target.length() == 0L ||
+                (target == layout.prootExecutable && !layout.isAarch64Executable(target))
+            if (!needsInstall) continue
+
+            val fromPublic = File(publicDir, target.name)
+            when {
+                fromPublic.isFile && fromPublic.length() > 0 -> {
+                    onProgress("  释放 ${target.name} ← 公共目录")
+                    fromPublic.copyTo(target, overwrite = true)
+                }
+
+                assetNames.contains(target.name) -> {
+                    onProgress("  释放 ${target.name} ← APK 内置")
+                    context.assets.open("${ProtonLayout.TOOLCHAIN_ASSET_DIR}/${target.name}").use { input ->
+                        FileOutputStream(target).use { output -> input.copyTo(output) }
+                    }
+                }
+
+                else -> throw IllegalStateException("缺少 PRoot 组件: ${target.name}")
+            }
+            target.setReadable(true, false)
+            target.setExecutable(true, false)
+        }
+
+        if (!layout.isAarch64Executable(layout.prootExecutable)) {
+            throw IllegalStateException(
+                "PRoot 架构校验失败：期望 aarch64 ELF，实际 e_machine=" +
+                    "${layout.elfMachine(layout.prootExecutable)}（x86_64=62，aarch64=183）"
+            )
+        }
+        onProgress("  PRoot 校验通过 (aarch64 ELF)")
+    }
+
+    // ------------------------------------------------------------------
+    // 2. guest rootfs
+    // ------------------------------------------------------------------
+
+    private fun ensureGuestRoot(onProgress: (String) -> Unit): File? {
+        layout.resolveGuestRoot()?.let { return it }
+
+        val tar = File(ProtonLayout.PUBLIC_ROOTFS_TAR)
+        if (!tar.isFile) {
+            onProgress("[2/3] 未找到 rootfs.tar.gz，无法装配 glibc 环境")
+            return null
+        }
+
+        onProgress("[2/3] 正在解压 rootfs.tar.gz（约需数十秒）...")
+        extractTarGz(tar, layout.rootfsDir)
+        return layout.resolveGuestRoot()
+    }
+
+    // ------------------------------------------------------------------
+    // 3. Proton 载荷
+    // ------------------------------------------------------------------
+
+    private fun ensureProtonPayload(guestRoot: File, onProgress: (String) -> Unit) {
+        val wine = layout.wineExecutable(guestRoot)
+        if (wine.isFile) {
+            onProgress("[3/3] Proton 11 ARM64 核心已就位: $wine")
+            chmodExecutable(File(guestRoot, "${ProtonLayout.PROTON_OPT_RELATIVE}/files/bin-arm64"))
+            return
+        }
+
+        val protonDir = layout.protonDir(guestRoot)
+        protonDir.mkdirs()
+        val publicTar = File(ProtonLayout.PUBLIC_PROTON_TAR)
+
+        if (publicTar.isFile) {
+            onProgress("[3/3] 正在解压本地 Proton 核心到 /opt/proton ...")
+        } else {
+            onProgress("[3/3] 正在从云端下载 Proton 核心 (562MB)...")
+            downloadWithProgress(URL_PROTON_CORE, publicTar) { pct ->
+                postProgress(onProgress, "  下载进度: $pct%")
+            }
+            onProgress("[3/3] 正在解压 Proton 核心到 /opt/proton ...")
+        }
+
+        extractTarGz(publicTar, protonDir)
+        chmodExecutable(File(protonDir, "files/bin-arm64"))
+    }
+
+    // ------------------------------------------------------------------
+    // 工具方法
+    // ------------------------------------------------------------------
 
     private fun extractTarGz(tarFile: File, targetDir: File) {
         targetDir.mkdirs()
@@ -122,7 +167,17 @@ class ProtonRuntimeInstaller(private val context: Context) {
         ).redirectErrorStream(true).start()
         val code = proc.waitFor()
         if (code != 0) {
-            throw RuntimeException("tar -xzf failed with code $code")
+            throw RuntimeException("tar -xzf ${tarFile.name} 失败，退出码 $code")
+        }
+    }
+
+    private fun chmodExecutable(dir: File) {
+        if (!dir.isDirectory) return
+        dir.walkTopDown().forEach { file ->
+            if (file.isFile && !file.isSymbolicLink) {
+                file.setReadable(true, false)
+                file.setExecutable(true, false)
+            }
         }
     }
 
@@ -132,7 +187,7 @@ class ProtonRuntimeInstaller(private val context: Context) {
         connection.connectTimeout = 15000
         connection.readTimeout = 30000
 
-        var responseCode = connection.responseCode
+        val responseCode = connection.responseCode
         if (responseCode == HttpURLConnection.HTTP_MOVED_TEMP || responseCode == HttpURLConnection.HTTP_MOVED_PERM) {
             val newUrl = connection.getHeaderField("Location")
             connection = URL(newUrl).openConnection() as HttpURLConnection

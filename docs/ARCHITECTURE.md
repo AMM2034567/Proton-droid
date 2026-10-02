@@ -68,3 +68,60 @@ Proton 11 通过引入 **FEX-Emu 作为 Wine UnixLib 插件** 和 **ARM64EC (ARM
 2. **扩展兼容防护**：
    - 关闭未被 Mali 支持的 `NVAPI` 扩展查询。
    - 依赖 DXVK 的内部回退机制替代缺失的 `VK_EXT_transform_feedback`。
+
+---
+
+## 三、Android 侧启动链路（修复后的实际实现）
+
+```
+MainActivity ──Intent──> GameViewActivity ──startForegroundService──> ProtonForegroundService
+                                                                            │
+                                                     ProtonProcessManager.launchGame()
+                                                                            │
+                            fork() + execve()  （JNI，错误通过 CLOEXEC 管道回传 errno）
+                                                                            │
+                            files/bin/proot  ← APK assets 释放的 aarch64 静态工具链
+                                                                            │
+                     proot -r <guestRoot> -0 --kill-on-exit -b ... (ptrace 接管)
+                                                                            │
+                     Debian 13 glibc guest  (/sdcard 1:1 bind)
+                                                                            │
+                     /opt/proton/files/bin-arm64/wine explorer /desktop=ProtonDroid,1280x720 <game.exe>
+                                                                            │
+                                            DISPLAY=:0 ──> Termux-X11 (X 服务器)
+```
+
+### 三个必须遵守的硬性约束
+
+1. **`targetSdk` 必须为 28**：Android 10+ 的 W^X 规则会同时禁止
+   *执行* 私有目录内的二进制（`execve` 返回 `EACCES`）与 *可执行映射*
+   （`mmap PROT_EXEC`，Wine 加载 PE 镜像时报 `noexec filesystem?`）。
+   只有 `targetSdk <= 28` 的应用才会落入允许这两件事的 `untrusted_app_27` 域。
+2. **PRoot 工具链必须是与设备同架构的原生 ELF**：`proot` / `loader` /
+   `libtalloc.so.2` / `libandroid-shmem.so` 均为 **aarch64**；
+   上游 `proot-me/proot` release 只提供 x86_64 资产，不能直接使用。
+   安装器会读取 ELF `e_machine` 做校验（`183 = AArch64`，`62 = x86-64`）。
+3. **guest rootfs 的层次不能假定**：`rootfs.tar.gz` 可能是
+   `debian/rootfs/...` 这种带前缀的打包结果，因此
+   `ProtonLayout.resolveGuestRoot()` 会探测真正的 Linux 根，
+   并把 Proton 载荷放进 `<guestRoot>/opt/proton`。
+
+### 已知的运行期环境要点
+
+| 环境变量 / 参数 | 作用 |
+| --- | --- |
+| `PROOT_LOADER` / `PROOT_LOADER_32` | 指向 assets 释放出的 `loader` / `loader32`，否则 PRoot 无法注入 |
+| `PROOT_TMP_DIR` | Android 没有 `/tmp`，必须指向应用私有可写目录 |
+| `LD_LIBRARY_PATH` | 同时包含 PRoot 自身依赖目录（libtalloc / libandroid-shmem）与 guest 内 Proton 库目录 |
+| `WINEDLLPATH` | `<proton>/files/lib/vkd3d:<proton>/files/lib/wine`，Wine 据此定位内置 DLL 与 nls 数据 |
+| `-b .../files/share/wine:/usr/share/wine` | Proton 载荷编译期数据目录就是 `/usr/share/wine`，不 bind 会导致 `failed to load l_intl.nls` 并崩溃 |
+| `-0 --kill-on-exit` | 伪 root 身份；游戏退出时一并回收 PRoot 子进程 |
+
+### 显示输出说明
+
+`GameViewActivity` 的 `SurfaceView` 通过 NDK 持有 `ANativeWindow` 句柄，
+但 Windows 游戏画面由 **Wine 的 X11 后端**渲染，因此实际显示在
+**Termux-X11** 窗口中：应用启动前会用 `NativeBridge.checkX11Display(0)`
+探测 `@/tmp/.X11-unix/X0`（抽象 socket，不受文件系统权限限制），
+未检测到时会直接提示用户先执行 `termux-x11 :0`。
+

@@ -9,7 +9,8 @@
 ```
 Proton-droid/
 ├── app/                        # Android 应用层 (Kotlin + NDK C++)
-│   ├── src/main/cpp/           # C++ JNI 调度桥接 (fork, execve, signal, page size)
+│   ├── src/main/assets/proot/  # 内置 aarch64 PRoot 工具链 (proot/loader/libtalloc/libandroid-shmem)
+│   ├── src/main/cpp/           # C++ JNI 调度桥接 (fork, execve, signal, page size, X11 探测)
 │   ├── src/main/java/          # Kotlin 进程管理与控制台界面
 │   └── src/main/res/           # Android UI 布局与主题
 ├── scripts/
@@ -22,6 +23,28 @@ Proton-droid/
 ├── local.properties            # 本机 SDK & NDK 路径配置
 └── build.gradle.kts            # 项目顶层构建脚本
 ```
+
+---
+
+## ⚠️ 关键约束：targetSdk 必须保持 28
+
+Android 10 (API 29) 起对新应用启用 **W^X 限制**：应用私有目录
+(`/data/user/0/<pkg>`) 中的文件 **既不能 `execve()`，也不能建立可执行映射
+(`mmap PROT_EXEC`)**。Proton-droid 需要在这个沙箱里执行 PRoot，并让 Wine 把 PE 镜像
+映射成可执行内存，因此 **`targetSdk` 必须保持 28**，进程才会落在
+`untrusted_app_27` 域（可用 `cat /system/etc/selinux/plat_seapp_contexts` 验证）。
+
+同样的做法见：
+- Termux（`targetSdk 28`，否则 `proot-distro` 无法执行 `$PREFIX/bin` 下的二进制）
+- Wine 官方 Android 移植：*“wineandroid: lower targetSdkVersion to avoid Android 10 W^X restrictions”*
+
+如果误把 `targetSdk` 提到 29+，表现为：
+
+| 症状 | 根因 |
+| --- | --- |
+| `execve failed ... (errno: 13)`，日志文件 0 字节，界面显示退出码 127 | `untrusted_app` 域禁止执行私有目录文件 |
+| `wineserver: failed to load l_intl.nls` 后 `wine client error: recvmsg: Connection reset by peer` | wine 数据目录未 bind 到 `/usr/share/wine` |
+| `err:virtual:map_image_into_view failed to set 60000020 protection ... noexec filesystem?` | W^X 禁止私有目录文件的可执行映射 |
 
 ---
 

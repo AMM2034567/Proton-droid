@@ -2,10 +2,16 @@
 #include <string>
 #include <vector>
 #include <mutex>
+#include <cstring>
+#include <cstddef>
+#include <cstdio>
+#include <cerrno>
 #include <unistd.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <sys/stat.h>
+#include <sys/socket.h>
+#include <sys/un.h>
 #include <fcntl.h>
 #include <signal.h>
 #include <android/log.h>
@@ -44,7 +50,15 @@ Java_com_protondroid_NativeBridge_checkGpuNodeAccess(JNIEnv *env, jobject /* thi
 }
 
 /**
- * 通过 fork() + execve() 启动 Proton 独立进程，返回子进程 PID
+ * 通过 fork() + execve() 启动 Proton 独立进程。
+ *
+ * 返回值约定：
+ *   > 0  子进程 PID（execve 已成功）
+ *   < 0  失败，返回 -errno（例如 -13 = EACCES、-8 = ENOEXEC）
+ *
+ * 实现要点：父进程通过一条 CLOEXEC 管道获知 execve 的真实 errno。
+ * execve 成功时管道写端随 exec 自动关闭（read 返回 0）；失败时子进程写入 errno。
+ * 这样 UI 才能拿到“权限被拒绝”这类根因，而不是只看到一个静默的退出码 127。
  */
 JNIEXPORT jint JNICALL
 Java_com_protondroid_NativeBridge_forkAndExec(
@@ -58,9 +72,9 @@ Java_com_protondroid_NativeBridge_forkAndExec(
     const char *cmd_str = env->GetStringUTFChars(command, nullptr);
     const char *log_str = logPath != nullptr ? env->GetStringUTFChars(logPath, nullptr) : nullptr;
 
-    // 解析可执行参数
+    // 解析可执行参数：argv[0] = 可执行文件路径，其余来自 argsArray
     std::vector<std::string> args_vec;
-    args_vec.push_back(cmd_str);
+    args_vec.emplace_back(cmd_str);
 
     int arg_count = env->GetArrayLength(argsArray);
     for (int i = 0; i < arg_count; ++i) {
@@ -94,12 +108,24 @@ Java_com_protondroid_NativeBridge_forkAndExec(
     }
     exec_envs.push_back(nullptr);
 
+    int err_pipe[2] = {-1, -1};
+    if (pipe(err_pipe) != 0) {
+        LOGE("pipe() failed! errno: %d", errno);
+        int saved = errno;
+        env->ReleaseStringUTFChars(command, cmd_str);
+        if (log_str != nullptr) env->ReleaseStringUTFChars(logPath, log_str);
+        return -saved;
+    }
+    // execve 成功后写端自动关闭（CLOEXEC），父进程因此能区分“成功”与“失败”
+    fcntl(err_pipe[1], F_SETFD, FD_CLOEXEC);
+
     LOGI("Forking process for command: %s", cmd_str);
     pid_t pid = fork();
 
     if (pid == 0) {
-        // 子进程环境
-        // 重定向标准输出与错误输出到日志文件
+        // ---- 子进程 ----
+        close(err_pipe[0]);
+
         if (log_str != nullptr) {
             int log_fd = open(log_str, O_CREAT | O_WRONLY | O_APPEND, 0666);
             if (log_fd >= 0) {
@@ -109,24 +135,94 @@ Java_com_protondroid_NativeBridge_forkAndExec(
             }
         }
 
-        // 执行目标可执行程序 (e.g., wine, python3 proton_standalone.py)
         execve(cmd_str, exec_args.data(), exec_envs.data());
 
-        // 如果 execve 返回则表示失败
-        LOGE("execve failed for %s (errno: %d)", cmd_str, errno);
+        int child_errno = errno;
+        ssize_t ignored = write(err_pipe[1], &child_errno, sizeof(child_errno));
+        (void) ignored;
+        LOGE("execve failed for %s (errno: %d)", cmd_str, child_errno);
         _exit(127);
-    } else if (pid < 0) {
-        LOGE("fork() failed! errno: %d", errno);
-    } else {
-        LOGI("Spawned Proton child process with PID: %d", pid);
     }
+
+    // ---- 父进程 ----
+    close(err_pipe[1]);
+    int child_errno = 0;
+    ssize_t bytes = 0;
+    do {
+        bytes = read(err_pipe[0], &child_errno, sizeof(child_errno));
+    } while (bytes < 0 && errno == EINTR);
+    close(err_pipe[0]);
 
     env->ReleaseStringUTFChars(command, cmd_str);
     if (log_str != nullptr) {
         env->ReleaseStringUTFChars(logPath, log_str);
     }
 
+    if (pid < 0) {
+        int saved = errno;
+        LOGE("fork() failed! errno: %d", saved);
+        return -saved;
+    }
+
+    if (bytes == (ssize_t) sizeof(child_errno)) {
+        // execve 失败：回收子进程并上报 errno
+        waitpid(pid, nullptr, 0);
+        return -child_errno;
+    }
+
+    LOGI("Spawned Proton child process with PID: %d", pid);
     return static_cast<jint>(pid);
+}
+
+/**
+ * 探测本地 X11 显示是否可达（Termux-X11 监听的是抽象 unix socket，
+ * 抽象 socket 不经过文件系统权限检查，因此任意应用都可作为 X 客户端连接）。
+ */
+JNIEXPORT jboolean JNICALL
+Java_com_protondroid_NativeBridge_checkX11Display(JNIEnv *env, jobject /* this */, jint display) {
+    const int d = static_cast<int>(display);
+
+    // 1) 抽象 socket: "@/tmp/.X11-unix/X<n>"
+    {
+        struct sockaddr_un addr;
+        memset(&addr, 0, sizeof(addr));
+        addr.sun_family = AF_UNIX;
+        addr.sun_path[0] = '\0';
+        snprintf(addr.sun_path + 1, sizeof(addr.sun_path) - 1, "/tmp/.X11-unix/X%d", d);
+        socklen_t len = static_cast<socklen_t>(
+                offsetof(struct sockaddr_un, sun_path) + 1 + strlen(addr.sun_path + 1));
+
+        int fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
+        if (fd >= 0) {
+            bool ok = connect(fd, reinterpret_cast<struct sockaddr *>(&addr), len) == 0;
+            close(fd);
+            if (ok) {
+                LOGI("X11 abstract socket for display :%d is reachable", d);
+                return JNI_TRUE;
+            }
+        }
+    }
+
+    // 2) 文件系统 socket: "/tmp/.X11-unix/X<n>"
+    {
+        struct sockaddr_un addr;
+        memset(&addr, 0, sizeof(addr));
+        addr.sun_family = AF_UNIX;
+        snprintf(addr.sun_path, sizeof(addr.sun_path), "/tmp/.X11-unix/X%d", d);
+
+        int fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
+        if (fd >= 0) {
+            bool ok = connect(fd, reinterpret_cast<struct sockaddr *>(&addr), sizeof(addr)) == 0;
+            close(fd);
+            if (ok) {
+                LOGI("X11 filesystem socket for display :%d is reachable", d);
+                return JNI_TRUE;
+            }
+        }
+    }
+
+    LOGI("No X11 server reachable for display :%d", d);
+    return JNI_FALSE;
 }
 
 /**

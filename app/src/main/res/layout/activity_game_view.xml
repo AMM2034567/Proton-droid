@@ -38,4 +38,19 @@
             android:textSize="11sp" />
     </LinearLayout>
 
+    <!-- 运行状态/错误提示条：启动失败时把根因直接显示出来，避免“黑屏无反应” -->
+    <TextView
+        android:id="@+id/tv_game_status"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_gravity="bottom"
+        android:background="#B3000000"
+        android:fontFamily="monospace"
+        android:maxLines="8"
+        android:padding="8dp"
+        android:scrollbars="vertical"
+        android:text="[准备启动] 正在初始化 Proton 运行时..."
+        android:textColor="@color/accent_green"
+        android:textSize="11sp" />
+
 </FrameLayout>

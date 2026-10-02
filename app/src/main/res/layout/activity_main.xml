@@ -157,6 +157,15 @@
                         android:textColor="@color/teal_200"
                         android:textSize="12sp" />
 
+                    <Button
+                        android:id="@+id/btn_self_test"
+                        style="@style/Widget.MaterialComponents.Button.TextButton"
+                        android:layout_width="wrap_content"
+                        android:layout_height="36dp"
+                        android:text="运行时自检"
+                        android:textColor="@color/teal_200"
+                        android:textSize="12sp" />
+
                     <TextView
                         android:id="@+id/tv_scanned_count"
                         android:layout_width="wrap_content"

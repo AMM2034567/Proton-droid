@@ -11,6 +11,7 @@ import android.widget.Button
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
 import com.protondroid.NativeBridge
+import com.protondroid.ProtonStatus
 import com.protondroid.R
 import com.protondroid.service.ProtonForegroundService
 
@@ -18,8 +19,13 @@ class GameViewActivity : AppCompatActivity(), SurfaceHolder.Callback {
 
     private lateinit var surfaceView: SurfaceView
     private lateinit var tvGameTitle: TextView
+    private lateinit var tvGameStatus: TextView
     private lateinit var btnExit: Button
     private var gamePath: String = ""
+
+    private val statusListener: (String) -> Unit = { message ->
+        runOnUiThread { appendStatus(message) }
+    }
 
     companion object {
         const val EXTRA_GAME_PATH = "extra_game_path"
@@ -33,6 +39,7 @@ class GameViewActivity : AppCompatActivity(), SurfaceHolder.Callback {
 
         surfaceView = findViewById(R.id.surface_game_view)
         tvGameTitle = findViewById(R.id.tv_game_title)
+        tvGameStatus = findViewById(R.id.tv_game_status)
         btnExit = findViewById(R.id.btn_exit_game)
 
         tvGameTitle.text = gamePath.substringAfterLast('/')
@@ -47,6 +54,28 @@ class GameViewActivity : AppCompatActivity(), SurfaceHolder.Callback {
             ProtonForegroundService.stopService(this)
             finish()
         }
+
+        if (!NativeBridge.checkX11Display(0)) {
+            appendStatus("提示: 未检测到 X11 显示 :0")
+            appendStatus("请先在 Termux 中执行 `termux-x11 :0`，再回到本页重新启动。")
+            appendStatus("（Wine/游戏窗口由 Termux-X11 呈现，不会绘制到本应用 SurfaceView）")
+        }
+    }
+
+    override fun onStart() {
+        super.onStart()
+        ProtonStatus.register(statusListener)
+    }
+
+    override fun onStop() {
+        ProtonStatus.unregister(statusListener)
+        super.onStop()
+    }
+
+    private fun appendStatus(message: String) {
+        val current = tvGameStatus.text.toString()
+        val lines = (current + "\n" + message).trim().lines()
+        tvGameStatus.text = if (lines.size > 8) lines.takeLast(8).joinToString("\n") else lines.joinToString("\n")
     }
 
     private fun enableImmersiveMode() {
@@ -75,8 +104,11 @@ class GameViewActivity : AppCompatActivity(), SurfaceHolder.Callback {
         if (attached) {
             // 启动前台服务保活，并拉起 Proton 引擎
             if (gamePath.isNotEmpty()) {
+                appendStatus("正在启动 Proton 引擎: ${gamePath.substringAfterLast('/')}")
                 ProtonForegroundService.startService(this, gamePath)
             }
+        } else {
+            appendStatus("错误: 无法绑定渲染 Surface")
         }
     }
 
