@@ -248,9 +248,10 @@ class ProtonProcessManager(private val context: Context) {
                 running = false
                 activePid = -1
                 val message = when {
-                    code < 0 -> "游戏进程已被信号终止 (signal ${-code})"
-                    code == 127 -> "启动失败 (退出码 127: execve 被拒；请检查 logcat/ProtonBridge)"
-                    else -> "游戏已退出 (退出码: $code)"
+                    code == -1 -> "游戏进程已结束（状态未知，可能已被系统回收）"
+                    code >= 100 && code == 100 -> "游戏已正常退出 (退出码 0)"
+                    code >= 100 -> "游戏已退出 (退出码: ${code - 100})"
+                    else -> "游戏进程被信号终止 (signal ${-code - 100})"
                 }
                 appendLog(message)
                 report(message)
@@ -270,18 +271,30 @@ class ProtonProcessManager(private val context: Context) {
         if (!layout.prootExecutable.isFile) return "自检失败: 未找到 ${layout.prootExecutable.absolutePath}"
         layout.tmpDir.mkdirs()
 
+        val selfTestLog = File(context.filesDir, "proot-selftest.log")
+        try {
+            selfTestLog.writeText("")
+        } catch (ignored: Exception) {
+        }
+
         val pid = NativeBridge.forkAndExec(
             command = layout.prootExecutable.absolutePath,
             args = arrayOf("--version"),
             envs = buildToolchainEnv(),
-            logPath = File(context.filesDir, "proot-selftest.log").absolutePath
+            logPath = selfTestLog.absolutePath
         )
         if (pid <= 0) return "自检失败: ${describeLaunchError(pid)}"
 
         repeat(50) {
             val code = NativeBridge.waitPid(pid)
             if (code != 0) {
-                return "自检通过: proot 可执行且正常退出 (退出码 $code)"
+                val detail = when {
+                    code == -1 -> "状态未知"
+                    code >= 100 -> "退出码 ${code - 100}"
+                    else -> "被信号 ${-code - 100} 终止"
+                }
+                val output = readTail(selfTestLog, 3).replace("\n", " / ")
+                return "自检完成: proot 可执行 ($detail) 输出: $output"
             }
             Thread.sleep(100)
         }
@@ -298,12 +311,12 @@ class ProtonProcessManager(private val context: Context) {
         else -> "fork/exec 失败 (返回 $code)"
     }
 
-    fun readLogTail(maxLines: Int = 40): String {
-        val file = logFile
+    fun readLogTail(maxLines: Int = 40): String = readTail(logFile, maxLines)
+
+    private fun readTail(file: File, maxLines: Int): String {
         if (!file.isFile || file.length() == 0L) return "(日志为空)"
         return try {
-            val lines = file.readLines()
-            lines.takeLast(maxLines).joinToString("\n")
+            file.readLines().takeLast(maxLines).joinToString("\n")
         } catch (e: Exception) {
             "(读取日志失败: ${e.message})"
         }

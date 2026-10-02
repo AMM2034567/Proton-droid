@@ -238,6 +238,12 @@ Java_com_protondroid_NativeBridge_killProcess(JNIEnv *env, jobject /* this */, j
 
 /**
  * 轮询子进程状态 (非阻塞)
+ *
+ * 返回值编码（必须能区分“仍在运行”与“已成功退出且退出码为 0”）：
+ *    0            仍在运行
+ *    100 + code   已退出，code 为退出码 (0..255)
+ *  -(100 + sig)  被信号 sig 终止
+ *   -1           没有该子进程（已被回收）
  */
 JNIEXPORT jint JNICALL
 Java_com_protondroid_NativeBridge_waitPid(JNIEnv *env, jobject /* this */, jint pid) {
@@ -245,18 +251,16 @@ Java_com_protondroid_NativeBridge_waitPid(JNIEnv *env, jobject /* this */, jint 
     int status = 0;
     pid_t res = waitpid(static_cast<pid_t>(pid), &status, WNOHANG);
     if (res == 0) {
-        // 仍在运行
-        return 0;
+        return 0; // 仍在运行
     } else if (res > 0) {
-        // 已退出，返回退出码
         if (WIFEXITED(status)) {
-            return WEXITSTATUS(status);
+            return 100 + WEXITSTATUS(status);
         } else if (WIFSIGNALED(status)) {
-            return -WTERMSIG(status);
+            return -(100 + WTERMSIG(status));
         }
-        return 1;
+        return 100;
     }
-    return -1; // 进程不存在或错误
+    return -1; // 进程不存在 / 已被回收
 }
 
 // -----------------------------------------------------------------------------

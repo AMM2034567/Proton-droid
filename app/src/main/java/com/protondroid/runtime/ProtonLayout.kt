@@ -121,13 +121,22 @@ class ProtonLayout(private val context: Context) {
         return File(guestRoot, "bin/sh").exists() && wineExecutable(guestRoot).exists()
     }
 
-    /** wine prefix 是否已初始化（kernel32.dll 与 dosdevices/c: 都可解析） */
+    /**
+     * wine prefix 是否已初始化。
+     *
+     * 注意：prefix 里的 DLL 是**guest 绝对路径**的符号链接（如
+     * `/opt/proton/files/lib/wine/...`），在宿主机侧永远解析不到目标，
+     * 因此这里必须用“链接本身存在”判定（lexists），不能用 exists()。
+     */
     fun isPrefixValid(guestRoot: File): Boolean {
         val pfx = prefixDir(guestRoot)
         val kernel32 = File(pfx, "drive_c/windows/system32/kernel32.dll")
         val cDrive = File(pfx, "dosdevices/c:")
-        return kernel32.exists() && cDrive.exists()
+        return lexists(kernel32) && lexists(cDrive)
     }
+
+    private fun lexists(file: File): Boolean =
+        file.exists() || java.nio.file.Files.isSymbolicLink(file.toPath())
 
     /**
      * 把宿主机绝对路径转换为 guest 内路径。
