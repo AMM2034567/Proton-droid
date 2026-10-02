@@ -1,6 +1,7 @@
 #include <jni.h>
 #include <string>
 #include <vector>
+#include <mutex>
 #include <unistd.h>
 #include <sys/types.h>
 #include <sys/wait.h>
@@ -8,6 +9,8 @@
 #include <fcntl.h>
 #include <signal.h>
 #include <android/log.h>
+#include <android/native_window.h>
+#include <android/native_window_jni.h>
 
 #define LOG_TAG "ProtonBridge"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
@@ -158,6 +161,78 @@ Java_com_protondroid_NativeBridge_waitPid(JNIEnv *env, jobject /* this */, jint 
         return 1;
     }
     return -1; // 进程不存在或错误
+}
+
+// -----------------------------------------------------------------------------
+// SurfaceView / ANativeWindow 渲染直通模块
+// -----------------------------------------------------------------------------
+
+static std::mutex g_window_mutex;
+static ANativeWindow* g_native_window = nullptr;
+
+/**
+ * 关联 Java 层 SurfaceView 的底层 Surface，获取 ANativeWindow 句柄
+ */
+JNIEXPORT jboolean JNICALL
+Java_com_protondroid_NativeBridge_nativeSetSurface(JNIEnv *env, jobject /* this */, jobject surface) {
+    std::lock_guard<std::mutex> lock(g_window_mutex);
+
+    if (g_native_window != nullptr) {
+        ANativeWindow_release(g_native_window);
+        g_native_window = nullptr;
+    }
+
+    if (surface != nullptr) {
+        g_native_window = ANativeWindow_fromSurface(env, surface);
+        if (g_native_window != nullptr) {
+            int32_t width = ANativeWindow_getWidth(g_native_window);
+            int32_t height = ANativeWindow_getHeight(g_native_window);
+            LOGI("ANativeWindow attached successfully! (Size: %dx%d)", width, height);
+            return JNI_TRUE;
+        } else {
+            LOGE("Failed to acquire ANativeWindow from Surface!");
+            return JNI_FALSE;
+        }
+    }
+    return JNI_TRUE;
+}
+
+/**
+ * 释放 ANativeWindow 句柄 (Surface 销毁时调用)
+ */
+JNIEXPORT void JNICALL
+Java_com_protondroid_NativeBridge_nativeReleaseSurface(JNIEnv *env, jobject /* this */) {
+    std::lock_guard<std::mutex> lock(g_window_mutex);
+    if (g_native_window != nullptr) {
+        LOGI("Releasing ANativeWindow...");
+        ANativeWindow_release(g_native_window);
+        g_native_window = nullptr;
+    }
+}
+
+/**
+ * 在 SurfaceView 上直接写入测试帧 (验证软/硬渲染管线打通)
+ */
+JNIEXPORT jboolean JNICALL
+Java_com_protondroid_NativeBridge_nativeDrawTestPattern(JNIEnv *env, jobject /* this */, jint color) {
+    std::lock_guard<std::mutex> lock(g_window_mutex);
+    if (g_native_window == nullptr) return JNI_FALSE;
+
+    ANativeWindow_Buffer buffer;
+    if (ANativeWindow_lock(g_native_window, &buffer, nullptr) < 0) {
+        LOGE("ANativeWindow_lock failed!");
+        return JNI_FALSE;
+    }
+
+    auto *pixels = static_cast<uint32_t *>(buffer.bits);
+    for (int y = 0; y < buffer.height; ++y) {
+        for (int x = 0; x < buffer.width; ++x) {
+            pixels[y * buffer.stride + x] = static_cast<uint32_t>(color);
+        }
+    }
+
+    ANativeWindow_unlockAndPost(g_native_window);
+    return JNI_TRUE;
 }
 
 } // extern "C"

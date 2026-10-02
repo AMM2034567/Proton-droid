@@ -5,4 +5,10 @@
         <item name="colorOnPrimary">@color/white</item>
         <item name="android:colorBackground">@color/bg_dark</item>
     </style>
+
+    <style name="Theme.Protondroid.Fullscreen" parent="Theme.MaterialComponents.DayNight.NoActionBar">
+        <item name="android:windowFullscreen">true</item>
+        <item name="android:windowContentOverlay">@null</item>
+        <item name="android:colorBackground">@color/black</item>
+    </style>
 </resources>

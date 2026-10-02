@@ -1,7 +1,10 @@
 #!/data/data/com.termux/files/usr/bin/bash
 # ==============================================================================
-# Proton-droid: Universal Game Launcher (Virtual Desktop Enabled)
+# Proton-droid: Universal Game Launcher (WakeLock & Background Protected)
 # ==============================================================================
+
+# 0. 申请前台电源锁，防止切到 Termux-X11 时 Termux 被系统挂起
+termux-wake-lock 2>/dev/null || true
 
 # 1. 确保音频服务运行
 if ! pgrep -x "pulseaudio" > /dev/null; then
@@ -37,7 +40,6 @@ echo "可执行文件: $EXE_NAME"
 echo "=================================================="
 
 # 5. 使用 Wine Virtual Desktop (1280x720) 强制创建实体显示视窗
-# 这能彻底解决无边框/透明窗口在 Android X11 下变成黑屏的问题
 export PROOT_NO_SECCOMP=1
 proot-distro login --shared-tmp debian -- bash -c "
 export DISPLAY=:0

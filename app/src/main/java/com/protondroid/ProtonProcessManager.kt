@@ -14,7 +14,7 @@ class ProtonProcessManager(private val context: Context) {
     private var statusCallback: ((String) -> Unit)? = null
 
     val runtimeDir: File by lazy {
-        File(context.filesDir, "proton-runtime").apply { mkdirs() }
+        File(context.filesDir, "runtime").apply { mkdirs() }
     }
 
     val prefixDir: File by lazy {

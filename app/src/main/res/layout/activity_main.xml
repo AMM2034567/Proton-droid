@@ -11,7 +11,7 @@
         android:layout_height="wrap_content"
         android:orientation="vertical">
 
-        <!-- Header -->
+        <!-- 顶部标题 -->
         <TextView
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
@@ -24,18 +24,18 @@
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:layout_marginTop="4dp"
-            android:text="原生 ARM64 兼容层调度核心 | 路线 B 原型"
+            android:text="原生 ARM64 兼容层调度核心 | 商业级独立架构"
             android:textColor="@color/teal_200"
             android:textSize="13sp" />
 
-        <!-- 硬件诊断卡片 -->
+        <!-- 1. 系统与硬件诊断看板 -->
         <com.google.android.material.card.MaterialCardView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="16dp"
+            android:layout_marginTop="14dp"
             app:cardBackgroundColor="@color/card_bg"
             app:cardCornerRadius="8dp"
-            app:contentPadding="14dp">
+            app:contentPadding="12dp">
 
             <LinearLayout
                 android:layout_width="match_parent"
@@ -47,37 +47,87 @@
                     android:layout_height="wrap_content"
                     android:text="@string/title_system_info"
                     android:textColor="@color/white"
-                    android:textSize="15sp"
+                    android:textSize="14sp"
                     android:textStyle="bold" />
 
                 <TextView
                     android:id="@+id/tv_page_size"
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:layout_marginTop="8dp"
+                    android:layout_marginTop="6dp"
                     android:text="内存分页: 检测中..."
                     android:textColor="@color/white"
-                    android:textSize="13sp" />
+                    android:textSize="12sp" />
 
                 <TextView
                     android:id="@+id/tv_gpu_status"
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:layout_marginTop="4dp"
-                    android:text="Mali GPU 节点: 检测中..."
+                    android:layout_marginTop="3dp"
+                    android:text="GPU 节点 (/dev/mali0): 检测中..."
                     android:textColor="@color/white"
-                    android:textSize="13sp" />
+                    android:textSize="12sp" />
+
+                <TextView
+                    android:id="@+id/tv_runtime_status"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="3dp"
+                    android:text="Proton 核心: 检测中..."
+                    android:textColor="@color/teal_200"
+                    android:textSize="12sp" />
             </LinearLayout>
         </com.google.android.material.card.MaterialCardView>
 
-        <!-- 运行配置卡片 -->
+        <!-- 2. 运行时安装与管理 -->
         <com.google.android.material.card.MaterialCardView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="16dp"
+            android:layout_marginTop="12dp"
             app:cardBackgroundColor="@color/card_bg"
             app:cardCornerRadius="8dp"
-            app:contentPadding="14dp">
+            app:contentPadding="12dp">
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical">
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="Proton 11 独立运行时沙箱"
+                    android:textColor="@color/white"
+                    android:textSize="14sp"
+                    android:textStyle="bold" />
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="4dp"
+                    android:text="一键将手机公共目录中的 562MB 产物安装到本 App 私有沙箱，彻底脱离外部 Termux"
+                    android:textColor="#FFAAAAAA"
+                    android:textSize="11sp" />
+
+                <Button
+                    android:id="@+id/btn_install_runtime"
+                    style="@style/Widget.MaterialComponents.Button.OutlinedButton"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="8dp"
+                    android:text="一键导入 / 重置 Proton 核心"
+                    android:textColor="@color/white" />
+            </LinearLayout>
+        </com.google.android.material.card.MaterialCardView>
+
+        <!-- 3. 游戏启动配置 -->
+        <com.google.android.material.card.MaterialCardView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            app:cardBackgroundColor="@color/card_bg"
+            app:cardCornerRadius="8dp"
+            app:contentPadding="12dp">
 
             <LinearLayout
                 android:layout_width="match_parent"
@@ -89,52 +139,77 @@
                     android:layout_height="wrap_content"
                     android:text="@string/title_game_launch"
                     android:textColor="@color/white"
-                    android:textSize="15sp"
+                    android:textSize="14sp"
                     android:textStyle="bold" />
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="8dp"
+                    android:orientation="horizontal">
+
+                    <Button
+                        android:id="@+id/btn_scan_games"
+                        style="@style/Widget.MaterialComponents.Button.TextButton"
+                        android:layout_width="wrap_content"
+                        android:layout_height="36dp"
+                        android:text="扫描本地游戏"
+                        android:textColor="@color/teal_200"
+                        android:textSize="12sp" />
+
+                    <TextView
+                        android:id="@+id/tv_scanned_count"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_gravity="center_vertical"
+                        android:text="已发现 0 款游戏"
+                        android:textColor="#FFAAAAAA"
+                        android:textSize="11sp" />
+                </LinearLayout>
 
                 <EditText
                     android:id="@+id/et_game_path"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:layout_marginTop="10dp"
+                    android:layout_marginTop="4dp"
                     android:background="@android:drawable/editbox_background_normal"
-                    android:hint="输入游戏 EXE 绝对路径 (如 /sdcard/ProtonDroid/games/game.exe)"
+                    android:hint="/sdcard/Download/ProtonDroid/games/goose/GooseDesktop.exe"
                     android:textColor="@color/black"
-                    android:textSize="13sp" />
+                    android:textSize="12sp" />
 
                 <LinearLayout
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:layout_marginTop="12dp"
+                    android:layout_marginTop="10dp"
                     android:orientation="horizontal">
 
                     <Button
-                        android:id="@+id/btn_launch"
+                        android:id="@+id/btn_launch_game"
                         android:layout_width="0dp"
                         android:layout_height="wrap_content"
                         android:layout_weight="1"
-                        android:text="@string/btn_start_game" />
+                        android:text="全屏启动游戏 (直通视窗)" />
 
                     <Button
-                        android:id="@+id/btn_stop"
+                        android:id="@+id/btn_stop_game"
                         style="@style/Widget.MaterialComponents.Button.OutlinedButton"
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
                         android:layout_marginStart="8dp"
-                        android:text="@string/btn_stop_game"
+                        android:text="停止"
                         android:textColor="@color/white" />
                 </LinearLayout>
             </LinearLayout>
         </com.google.android.material.card.MaterialCardView>
 
-        <!-- 日志与控制台卡片 -->
+        <!-- 4. 运行控制台与实时日志 -->
         <com.google.android.material.card.MaterialCardView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="16dp"
+            android:layout_marginTop="12dp"
             app:cardBackgroundColor="@color/card_bg"
             app:cardCornerRadius="8dp"
-            app:contentPadding="14dp">
+            app:contentPadding="12dp">
 
             <LinearLayout
                 android:layout_width="match_parent"
@@ -144,23 +219,23 @@
                 <TextView
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:text="控制台与运行日志"
+                    android:text="运行状态与控制台"
                     android:textColor="@color/white"
-                    android:textSize="15sp"
+                    android:textSize="14sp"
                     android:textStyle="bold" />
 
                 <TextView
                     android:id="@+id/tv_status_log"
                     android:layout_width="match_parent"
-                    android:layout_height="180dp"
-                    android:layout_marginTop="8dp"
+                    android:layout_height="140dp"
+                    android:layout_marginTop="6dp"
                     android:background="#FF0A0A0A"
                     android:fontFamily="monospace"
                     android:padding="8dp"
                     android:scrollbars="vertical"
-                    android:text="[System Ready] 等待指令..."
+                    android:text="[System Ready] Proton-droid 独立引擎已就绪..."
                     android:textColor="@color/accent_green"
-                    android:textSize="12sp" />
+                    android:textSize="11sp" />
             </LinearLayout>
         </com.google.android.material.card.MaterialCardView>
 

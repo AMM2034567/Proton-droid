@@ -10,6 +10,8 @@
     <!-- 进程前台运行与网络权限 (PulseAudio / X11 本地 socket 桥接) -->
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
 
     <application
@@ -34,6 +36,25 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!-- 游戏全屏渲染视窗 Activity -->
+        <activity
+            android:name=".ui.GameViewActivity"
+            android:exported="false"
+            android:configChanges="orientation|screenSize|screenLayout|keyboardHidden"
+            android:screenOrientation="sensorLandscape"
+            android:theme="@style/Theme.Protondroid.Fullscreen" />
+
+        <!-- 守护 Windows 游戏进程的最高优先级前台服务 -->
+        <service
+            android:name=".service.ProtonForegroundService"
+            android:enabled="true"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Windows game compatibility runtime and background process execution" />
+        </service>
     </application>
 
 </manifest>

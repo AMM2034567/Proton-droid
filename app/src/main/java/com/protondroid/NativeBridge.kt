@@ -19,4 +19,11 @@ object NativeBridge {
     external fun killProcess(pid: Int, sig: Int): Boolean
 
     external fun waitPid(pid: Int): Int
+
+    // 视窗直通
+    external fun nativeSetSurface(surface: android.view.Surface): Boolean
+
+    external fun nativeReleaseSurface()
+
+    external fun nativeDrawTestPattern(color: Int): Boolean
 }
