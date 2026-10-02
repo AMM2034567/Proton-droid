@@ -5,7 +5,9 @@
 #include <cstring>
 #include <cstddef>
 #include <cstdio>
+#include <cstdlib>
 #include <cerrno>
+#include <dirent.h>
 #include <unistd.h>
 #include <sys/types.h>
 #include <sys/wait.h>
@@ -126,6 +128,10 @@ Java_com_protondroid_NativeBridge_forkAndExec(
         // ---- 子进程 ----
         close(err_pipe[0]);
 
+        // 自建进程组：父进程可用 kill(-pid) 一次性终止 proot 及其所有 wine 子进程。
+        // 否则 stopSession 只 SIGTERM 直接子进程，wine/wineserver 会变成孤儿继续跑。
+        setpgid(0, 0);
+
         if (log_str != nullptr) {
             int log_fd = open(log_str, O_CREAT | O_WRONLY | O_APPEND, 0666);
             if (log_fd >= 0) {
@@ -226,14 +232,85 @@ Java_com_protondroid_NativeBridge_checkX11Display(JNIEnv *env, jobject /* this *
 }
 
 /**
- * 终止指定 PID 的进程
+ * 终止指定 PID 的进程（同时终止其所在进程组，覆盖 proot 拉起的整个 wine 进程树）
  */
 JNIEXPORT jboolean JNICALL
 Java_com_protondroid_NativeBridge_killProcess(JNIEnv *env, jobject /* this */, jint pid, jint sig) {
     if (pid <= 0) return JNI_FALSE;
     int res = kill(static_cast<pid_t>(pid), sig);
-    LOGI("kill(pid=%d, sig=%d) returned: %d", pid, sig, res);
+    // 子进程在 execve 前调用了 setpgid(0, 0)，因此 pgid == pid
+    int group_res = kill(-static_cast<pid_t>(pid), sig);
+    LOGI("kill(pid=%d, sig=%d) returned: %d (process group: %d)", pid, sig, res, group_res);
     return res == 0 ? JNI_TRUE : JNI_FALSE;
+}
+
+/**
+ * 清理本应用遗留的运行时进程（proot / wine / wineserver / wineboot ...）。
+ *
+ * 场景：应用进程被系统回收或用户直接从最近任务划掉时，proot 成为僵尸，
+ * 其下的 wine 子进程会被 reparent 到 init 继续存活 —— 既占资源又会锁住 wine prefix。
+ * 这里按「同 uid + 可执行文件位于本应用私有目录」精确匹配并 SIGKILL。
+ */
+JNIEXPORT jint JNICALL
+Java_com_protondroid_NativeBridge_cleanupStaleProcesses(JNIEnv *env, jobject /* this */, jstring filesDir) {
+    const char *prefix = env->GetStringUTFChars(filesDir, nullptr);
+    const size_t prefix_len = strlen(prefix);
+    const uid_t my_uid = getuid();
+    const pid_t myself = getpid();
+    int killed = 0;
+
+    DIR *proc_dir = opendir("/proc");
+    if (proc_dir == nullptr) {
+        env->ReleaseStringUTFChars(filesDir, prefix);
+        return 0;
+    }
+
+    struct dirent *entry;
+    while ((entry = readdir(proc_dir)) != nullptr) {
+        if (entry->d_name[0] < '0' || entry->d_name[0] > '9') continue;
+        const pid_t pid = static_cast<pid_t>(atoi(entry->d_name));
+        if (pid <= 1 || pid == myself) continue;
+
+        // 1) uid 校验
+        char status_path[64];
+        snprintf(status_path, sizeof(status_path), "/proc/%d/status", pid);
+        FILE *status = fopen(status_path, "r");
+        if (status == nullptr) continue;
+
+        bool same_uid = false;
+        char line[256];
+        while (fgets(line, sizeof(line), status) != nullptr) {
+            if (strncmp(line, "Uid:", 4) == 0) {
+                unsigned int real_uid = 0;
+                if (sscanf(line + 4, "%u", &real_uid) == 1) {
+                    same_uid = (real_uid == static_cast<unsigned int>(my_uid));
+                }
+                break;
+            }
+        }
+        fclose(status);
+        if (!same_uid) continue;
+
+        // 2) 可执行文件必须位于本应用私有目录内（避免误伤同 uid 的其他组件）
+        char exe_link[64];
+        snprintf(exe_link, sizeof(exe_link), "/proc/%d/exe", pid);
+        char target[512];
+        ssize_t len = readlink(exe_link, target, sizeof(target) - 1);
+        if (len <= 0) continue;
+        target[len] = '\0';
+
+        if (strncmp(target, prefix, prefix_len) == 0) {
+            kill(pid, SIGKILL);
+            kill(-pid, SIGKILL);
+            ++killed;
+            LOGI("Cleaned up stale runtime process pid=%d (%s)", pid, target);
+        }
+    }
+
+    closedir(proc_dir);
+    env->ReleaseStringUTFChars(filesDir, prefix);
+    LOGI("cleanupStaleProcesses killed %d process(es)", killed);
+    return static_cast<jint>(killed);
 }
 
 /**

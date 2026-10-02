@@ -90,6 +90,9 @@ class ProtonProcessManager(private val context: Context) {
         if (!NativeBridge.checkX11Display(0)) {
             report("警告: 未检测到 X11 显示 :0 —— 请先在 Termux 中执行 `termux-x11 :0`（Wine 需要它来创建窗口）")
         }
+        val swept = sweepStaleProcesses()
+        if (swept > 0) report("已清理上次遗留的运行时进程 $swept 个")
+
         layout.tmpDir.mkdirs()
         rotateLogIfNeeded()
         appendLog("==== ${timestamp()} 启动会话 ====")
@@ -219,18 +222,30 @@ class ProtonProcessManager(private val context: Context) {
         val pid = activePid
         if (pid <= 0) {
             running = false
+            sweepStaleProcesses()
             return
         }
         report("正在停止 Proton 会话 (PID: $pid)...")
-        NativeBridge.killProcess(pid, 15) // SIGTERM
+        // SIGTERM 发给整个进程组（子进程 setpgid(0,0)），覆盖 wine/wineserver
+        NativeBridge.killProcess(pid, 15)
         handler.postDelayed({
-            if (running && activePid == pid) {
-                NativeBridge.killProcess(pid, 9) // SIGKILL
-                activePid = -1
-                running = false
-                report("Proton 运行会话已强制结束")
-            }
+            NativeBridge.killProcess(pid, 9) // 组内 SIGKILL 兜底
+            activePid = -1
+            running = false
+            val swept = sweepStaleProcesses()
+            report(
+                if (swept > 0) "Proton 运行会话已停止（清掉残留进程 $swept 个）"
+                else "Proton 运行会话已停止"
+            )
         }, 1500)
+    }
+
+    /** 清理本应用私有目录下遗留的 proot/wine 进程（应用被回收后会变成孤儿） */
+    fun sweepStaleProcesses(): Int = try {
+        NativeBridge.cleanupStaleProcesses(context.filesDir.absolutePath)
+    } catch (t: Throwable) {
+        Log.w(tag, "sweepStaleProcesses failed: ${t.message}")
+        0
     }
 
     private fun monitorProcess() {

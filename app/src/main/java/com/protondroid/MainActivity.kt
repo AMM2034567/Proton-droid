@@ -65,6 +65,10 @@ class MainActivity : AppCompatActivity() {
         // 1. 检查存储权限
         checkStoragePermissions()
 
+        // 1.1 清掉上次被系统回收时遗留的运行时进程
+        val swept = processManager.sweepStaleProcesses()
+        if (swept > 0) appendLog("[INFO] 已清理上次遗留的运行时进程 $swept 个")
+
         // 2. 诊断底层系统与硬件
         refreshDashboard()
 
