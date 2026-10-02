@@ -2,6 +2,7 @@
 
 > 最后更新：2026-10-03 会话收尾
 > 状态：**「游戏无法启动」已修复并在真机逐层验证**；显示层方案已定 **B（内嵌 Xlorie）**，后续演进到 **C（wineandroid.drv）**。
+> 正式版方向：**App 内置下载 rootfs 与编译好的 Proton 产物**（产物走自己打包 → GitHub Release），见第 12 节。
 > 本文件是下次开工的第一入口；改动运行链路的代码前请先读第 2 节「铁律」。
 
 ---
@@ -266,11 +267,99 @@ git -c credential.helper= -c http.proxy=http://127.0.0.1:10809 `
 
 ---
 
-## 11. 下次开工 TODO（B 方案）
+## 11. 下次开工 TODO（按优先级）
+
+**P0 — B 方案（显示层，当前唯一硬缺口）**
 
 1. 拉取 `termux/termux-x11` 源码，梳理 `LorieView` / `CmdEntryPoint` 与 native 的 JNI 契约（方法签名、回调、启动参数、环境变量）。
-2. 把 `libXlorie.so` 以 `jniLibs` 形式引入（`packages/app` 侧 `System.loadLibrary`），并确认在 `untrusted_app_27` 域下能 `dlopen` + 建 Surface。
-3. 实现最小 Java 胶水：Surface 提供、输入注入（touch→X 事件）、生命周期；先不做剪贴板。
-4. `ProtonProcessManager.launchGame` 前启动 X 服务器；把 `checkX11Display` 从「提示」升级为「硬前置条件」。
+2. 把 `libXlorie.so` 以 `jniLibs` 形式引入（`System.loadLibrary`），确认在 `untrusted_app_27` 域下能 `dlopen` + 建 Surface。
+3. 实现最小 Java 胶水：Surface 提供、输入注入（touch→X 事件）、生命周期；剪贴板先不做。
+4. `ProtonProcessManager.launchGame` 前启动 X 服务器；`checkX11Display` 从「提示」升级为「硬前置条件」。
 5. 验证链：guest `xwininfo -root -tree` → `wine explorer /desktop=ProtonDroid,1280x720 <game.exe>` → SurfaceView 出现画面。
-6. 记录性能基线（osu!/goose 帧率、CPU/GPU 占用），为 C 方案做对比依据。
+6. 记录性能基线（osu!/goose 帧率、CPU/GPU 占用），作为 C 方案的对比依据。
+
+**P1 — 正式版运行时下载与发布链路**（见第 12 节）
+
+7. 定义 `runtime-manifest.json` 并让 App 按 manifest 下载 / 校验 / 解包 rootfs 与 Proton。
+8. `scripts/export_rootfs.sh` 改成**干净 rootfs 打包**（debootstrap 或精简导出），产物发 Release。
+9. `cloud_build_proton_arm64.sh` 的产物发 Release，并在 manifest 里登记版本 + SHA256。
+10. 下载体验：镜像回退、断点续传、空间预检、失败可续、进度可视化。
+
+**P2 — C 方案（终态）**
+
+11. 用 `wineandroid.drv` 重编 Proton ARM64，取消 X 服务器与合成层（Vulkan 直出 `ANativeWindow`）。
+
+**P3 — 收尾体验**
+
+12. 音频（PulseAudio 目前只是占位 `PULSE_SERVER=127.0.0.1`，未验证）、输入映射（手柄/键鼠）、prefix 存档备份/迁移。
+
+---
+
+## 12. 正式版方向：内置下载运行时 + Release 发布链路
+
+目标：用户装完 APK 后**不需要手动往 `/sdcard` 拷任何东西**，App 自己把干净的 glibc rootfs 与编译好的
+Proton 产物下载并装配好。
+
+### 12.1 现状（起点）
+
+| 组件 | 现状 | 缺口 |
+| --- | --- | --- |
+| PRoot 工具链（5 文件） | 已作为 APK assets 内置；也支持 `/sdcard/Download/ProtonDroid/proot_arm64/` 覆盖 | 基本够用，可加版本号 |
+| `proton-droid-arm64.tar.gz`（Proton 11 载荷） | `ProtonRuntimeInstaller.URL_PROTON_CORE` 已有下载地址 + `downloadWithProgress()` | 无版本管理/校验；URL 应指向自己的 Release |
+| `rootfs.tar.gz`（glibc 环境） | **只能从 `/sdcard/Download/ProtonDroid/rootfs.tar.gz` 读**（`PUBLIC_ROOTFS_TAR`），没有下载路径 | 需要「干净系统打包 → 发 Release → App 下载」整条链路 |
+
+### 12.2 发布侧（打包干净系统 + 编译产物）
+
+1. **干净 rootfs**：不要直接用设备备份（会带 `/opt/proton`、apt 缓存、游戏残留、proot-distro 痕迹）。
+   推荐 `debootstrap --arch=arm64 --variant=minbase trixie <dir> <mirror>`（或容器内等价流程），
+   只装 Proton 运行必需的依赖，最后 `tar -czf rootfs.tar.gz -C <dir> .`（扁平结构，正好被
+   `ProtonLayout.resolveGuestRoot()` 识别；同时保留对 `debian/rootfs/...` 嵌套结构的兼容）。
+2. **Proton 产物**：沿用 `scripts/cloud_build_proton_arm64.sh`（SteamRT4 SDK + `--target-arch=arm64` + `make redist`），
+   打包成 `proton-droid-arm64-<版本>.tar.gz`，**顶层就是 `files/...`**（解包到 `/opt/proton` 后得到
+   `/opt/proton/files/bin-arm64/wine`）。
+3. **发布**：两者都挂到 GitHub Release（tag 建议 `runtime-<日期>`），同时上传 `SHA256SUMS`。
+   Proton 是 Valve 的产物，分发前先确认许可（当前 `URL_PROTON_CORE` 指向 `AMM2034567/Proton-droid` 的 release，
+   正式发布时补齐 LICENSE/来源说明）。
+
+### 12.3 App 侧（按 manifest 下载）
+
+建议新增 `runtime-manifest.json`（放 Release 资产或 App 内置默认值 + 远端覆盖）：
+
+```json
+{
+  "manifestVersion": 1,
+  "rootfs": {
+    "version": "trixie-minbase-2026.10",
+    "url": "https://github.com/<owner>/<repo>/releases/download/runtime-20261003/rootfs.tar.gz",
+    "mirrors": ["https://.../rootfs.tar.gz"],
+    "sha256": "…", "size": 771000000, "layout": "flat"
+  },
+  "proton": {
+    "version": "11.0-100-arm64",
+    "url": "…/proton-droid-arm64-<版本>.tar.gz",
+    "sha256": "…", "size": 589000000
+  },
+  "prootToolchain": { "version": "5.1.107.96", "bundled": true }
+}
+```
+
+实现要点（对应 `ProtonRuntimeInstaller`）：
+
+- **下载**：`downloadWithProgress()` 扩展成「多镜像回退 + 断点续传（HTTP Range）+ 超时重试」；
+  先下载到 `files/downloads/*.part`，完成后校验再改名。
+- **校验**：SHA256（可用 `java.security.MessageDigest` 流式计算）+ 解包后结构校验
+  （复用 `ProtonLayout.resolveGuestRoot()` / `isRuntimeInstalled()`）。
+- **空间预检**：解包后 rootfs ~2.4GB + Proton ~1.x GB，下载前用 `StatFs` 检查剩余空间，
+  失败给明确提示（当前 `files/rootfs` 实测 2.4GB）。
+- **更新流程**：manifest 版本变化 → 只重下变化的组件；`games/` 是 `/sdcard` 上的用户数据不受影响；
+  wine prefix（`root/.proton_droid_pfx`）默认保留，提供「重置 prefix」按钮。
+- **可观测**：下载/解包各阶段写状态总线（`ProtonStatus`）与 `proton-stdout.log`，失败时报 URL/HTTP 码/校验结果。
+- **降级**：保留 `/sdcard/Download/ProtonDroid/` 的本地文件优先逻辑（离线装机、内网分发）。
+
+### 12.4 与显示层 B/C 的关系
+
+- 显示层 B（内嵌 Xlorie）也会引入新的二进制资产（`libXlorie.so`）与 Java 胶水，
+  建议一并纳入 manifest 的版本管理（虽然它更适合直接内置进 APK）。
+- 12.2 的 Proton 重建流程（SteamRT4 SDK 容器）与 C 方案（`wineandroid.drv`）是同一套构建体系，
+  后续应把「是否带 android 驱动」做成构建参数，而不是两套脚本。
+

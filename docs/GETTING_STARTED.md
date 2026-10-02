@@ -1,6 +1,10 @@
 # Proton-droid 快速上手指南
 
-> 📌 开工前先看 [`docs/PROJECT_MEMORY.md`](PROJECT_MEMORY.md)：项目记忆（铁律、代码地图、构建/验证手册、显示层路线与 TODO）。
+> 📌 开工前先看 [`docs/PROJECT_MEMORY.md`](PROJECT_MEMORY.md)：项目记忆（铁律、代码地图、构建/验证手册、显示层路线、正式版下载/发布链路与 TODO）。
+>
+> 🚧 正式版方向：**App 内置下载运行时** —— 干净的 glibc rootfs 与编译好的 Proton 产物都走自己的
+> GitHub Release，用户装完 APK 无需手动往 `/sdcard` 拷任何东西（设计见记忆第 12 节）。下面第一~三步
+> 描述的是当前的“手动准备”流程，正式版会把它们自动化掉。
 
 欢迎使用 **Proton-droid**！本项目旨在将 Valve 官方的 **Proton 11（ARM64 + FEX + ARM64EC DXVK）** 移植并落地到 Android 设备上。
 
