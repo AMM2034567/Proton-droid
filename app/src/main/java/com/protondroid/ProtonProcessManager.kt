@@ -100,7 +100,7 @@ class ProtonProcessManager(private val context: Context) {
         appendLog("root:  ${guestRoot.absolutePath}")
 
         val args = buildProotArgs(guestRoot, guestWorkDir, guestGamePath, extraArgs)
-        val env = buildGuestEnv(guestRoot)
+        val env = buildGuestEnv()
 
         appendLog("exec:  ${layout.prootExecutable.absolutePath} ${args.joinToString(" ")}")
 
@@ -120,6 +120,7 @@ class ProtonProcessManager(private val context: Context) {
 
         activePid = rc
         running = true
+        recordSessionPid(rc)
         appendLog("pid:   $rc")
         report("Proton 游戏引擎已启动 (PID: $rc)")
         monitorProcess()
@@ -160,7 +161,7 @@ class ProtonProcessManager(private val context: Context) {
         return args
     }
 
-    private fun buildGuestEnv(guestRoot: File): Array<String> {
+    private fun buildGuestEnv(): Array<String> {
         val proton = ProtonLayout.PROTON_GUEST_DIR
         val ldLibraryPath = listOf(
             layout.binDir.absolutePath,                       // proot 自身依赖 libtalloc / libandroid-shmem
@@ -232,6 +233,7 @@ class ProtonProcessManager(private val context: Context) {
             NativeBridge.killProcess(pid, 9) // 组内 SIGKILL 兜底
             activePid = -1
             running = false
+            clearRecordedPid()
             val swept = sweepStaleProcesses()
             report(
                 if (swept > 0) "Proton 运行会话已停止（清掉残留进程 $swept 个）"
@@ -240,12 +242,46 @@ class ProtonProcessManager(private val context: Context) {
         }, 1500)
     }
 
-    /** 清理本应用私有目录下遗留的 proot/wine 进程（应用被回收后会变成孤儿） */
+    /**
+     * 清理本应用私有目录下遗留的 proot/wine 进程（应用被回收后会变成孤儿）。
+     *
+     * 关键：如果记录中的会话 pid 仍然存活（例如用户在游戏运行中重新打开 App），
+     * 原生层会直接跳过整个清理，避免误杀正在跑的游戏。
+     */
     fun sweepStaleProcesses(): Int = try {
-        NativeBridge.cleanupStaleProcesses(context.filesDir.absolutePath)
+        val pid = recordedSessionPid()
+        val killed = NativeBridge.cleanupStaleProcesses(context.filesDir.absolutePath, pid)
+        if (killed > 0) clearRecordedPid()
+        killed
     } catch (t: Throwable) {
         Log.w(tag, "sweepStaleProcesses failed: ${t.message}")
         0
+    }
+
+    /** 会话 pid 跨进程持久化：App 被杀后重新拉起时仍能判断是否存在活跃会话 */
+    private val sessionPidFile: File get() = File(context.filesDir, "active-session.pid")
+
+    private fun recordSessionPid(pid: Int) {
+        try {
+            sessionPidFile.writeText(pid.toString())
+        } catch (ignored: Exception) {
+        }
+    }
+
+    private fun clearRecordedPid() {
+        try {
+            if (sessionPidFile.isFile) sessionPidFile.delete()
+        } catch (ignored: Exception) {
+        }
+    }
+
+    private fun recordedSessionPid(): Int {
+        if (activePid > 0) return activePid
+        return try {
+            if (sessionPidFile.isFile) sessionPidFile.readText().trim().toIntOrNull() ?: -1 else -1
+        } catch (e: Exception) {
+            -1
+        }
     }
 
     private fun monitorProcess() {
@@ -262,6 +298,7 @@ class ProtonProcessManager(private val context: Context) {
 
                 running = false
                 activePid = -1
+                clearRecordedPid()
                 val message = when {
                     code == -1 -> "游戏进程已结束（状态未知，可能已被系统回收）"
                     code >= 100 && code == 100 -> "游戏已正常退出 (退出码 0)"

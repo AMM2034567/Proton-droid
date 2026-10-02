@@ -244,48 +244,16 @@ Java_com_protondroid_NativeBridge_killProcess(JNIEnv *env, jobject /* this */, j
     return res == 0 ? JNI_TRUE : JNI_FALSE;
 }
 
-static bool read_same_uid_and_ppid(FILE *status, uid_t my_uid, pid_t *out_ppid, bool *out_same_uid) {
+static bool read_same_uid(FILE *status, uid_t my_uid) {
     char line[256];
-    bool got_ppid = false;
-    *out_same_uid = false;
-    *out_ppid = 0;
-
     while (fgets(line, sizeof(line), status) != nullptr) {
-        if (!got_ppid && strncmp(line, "PPid:", 5) == 0) {
-            unsigned int ppid = 0;
-            if (sscanf(line + 5, "%u", &ppid) == 1) {
-                *out_ppid = static_cast<pid_t>(ppid);
-                got_ppid = true;
-            }
-        } else if (strncmp(line, "Uid:", 4) == 0) {
+        if (strncmp(line, "Uid:", 4) == 0) {
             unsigned int real_uid = 0;
             if (sscanf(line + 4, "%u", &real_uid) == 1) {
-                *out_same_uid = (real_uid == static_cast<unsigned int>(my_uid));
+                return real_uid == static_cast<unsigned int>(my_uid);
             }
+            return false;
         }
-        if (got_ppid && *out_same_uid) break;
-    }
-    return got_ppid;
-}
-
-/** 沿父进程链向上查找，判断 pid 是否属于“本进程（或其子孙）”这棵活着的树 */
-static bool belongs_to_live_session(pid_t pid, pid_t myself) {
-    pid_t cur = pid;
-    for (int depth = 0; depth < 32 && cur > 1; ++depth) {
-        char path[64];
-        snprintf(path, sizeof(path), "/proc/%d/status", cur);
-        FILE *f = fopen(path, "r");
-        if (f == nullptr) return false;
-
-        uid_t unused_uid = static_cast<uid_t>(-1);
-        pid_t ppid = 0;
-        bool same_uid = false;
-        read_same_uid_and_ppid(f, unused_uid, &ppid, &same_uid);
-        fclose(f);
-
-        if (ppid <= 0) return false;
-        if (ppid == myself) return true;   // 是我们的直接/间接子进程 → 活跃会话
-        cur = ppid;
     }
     return false;
 }
@@ -293,19 +261,31 @@ static bool belongs_to_live_session(pid_t pid, pid_t myself) {
 /**
  * 清理本应用遗留的运行时进程（proot / wine / wineserver / wineboot ...）。
  *
- * 场景：应用进程被系统回收或用户直接从最近任务划掉时，proot 成为僵尸，
- * 其下的 wine 子进程被 reparent 到 init 继续存活 —— 既占资源又锁住 wine prefix。
+ * 场景：App 进程被系统回收后，proot 成为僵尸，其下的 wine 进程被 reparent 到
+ * init 继续存活 —— 既占资源又锁住 wine prefix。
  *
- * 判定：同 uid + 可执行文件位于本应用私有目录 + **父进程链中不含本进程**
- * （活跃会话的子孙会被排除，避免误杀正在运行的游戏）。
+ * 判据：
+ *   1. activePid 仍存活 ⇒ 存在活跃会话，**整个清理直接跳过**。
+ *      这里刻意不用“父进程链”判断：wine 的 wineserver / wineboot / winedevice
+ *      本来就会 daemon 化（PPid=1），按父子关系会把活跃会话当成孤儿误杀。
+ *   2. 否则按「同 uid + /proc/<pid>/exe 位于本应用私有目录」匹配并 SIGKILL。
  */
 JNIEXPORT jint JNICALL
-Java_com_protondroid_NativeBridge_cleanupStaleProcesses(JNIEnv *env, jobject /* this */, jstring filesDir) {
+Java_com_protondroid_NativeBridge_cleanupStaleProcesses(
+        JNIEnv *env, jobject /* this */, jstring filesDir, jint active_pid) {
     const char *prefix = env->GetStringUTFChars(filesDir, nullptr);
     const size_t prefix_len = strlen(prefix);
     const uid_t my_uid = getuid();
     const pid_t myself = getpid();
     int killed = 0;
+
+    if (active_pid > 0 && active_pid != static_cast<jint>(myself)) {
+        if (kill(static_cast<pid_t>(active_pid), 0) == 0) {
+            LOGI("cleanupStaleProcesses: active session pid=%d alive, skip sweep", active_pid);
+            env->ReleaseStringUTFChars(filesDir, prefix);
+            return 0;
+        }
+    }
 
     DIR *proc_dir = opendir("/proc");
     if (proc_dir == nullptr) {
@@ -325,28 +305,26 @@ Java_com_protondroid_NativeBridge_cleanupStaleProcesses(JNIEnv *env, jobject /* 
         FILE *status = fopen(status_path, "r");
         if (status == nullptr) continue;
 
-        pid_t ppid = 0;
-        bool same_uid = false;
-        read_same_uid_and_ppid(status, my_uid, &ppid, &same_uid);
+        bool same_uid = read_same_uid(status, my_uid);
         fclose(status);
         if (!same_uid) continue;
 
-        // 2) 属于本进程这棵活跃的树 → 绝不能动
-        if (ppid == myself || belongs_to_live_session(pid, myself)) continue;
-
-        // 3) 可执行文件必须位于本应用私有目录内（避免误伤同 uid 的其他组件）
+        // 2) 可执行文件必须位于本应用私有目录内（避免误伤同 uid 的其他组件）
         char exe_link[64];
         snprintf(exe_link, sizeof(exe_link), "/proc/%d/exe", pid);
         char target[512];
         ssize_t len = readlink(exe_link, target, sizeof(target) - 1);
-        if (len <= 0) continue;
+        if (len <= 0) {
+            LOGI("sweep: pid=%d 读取 exe 失败 (errno=%d)，跳过", pid, errno);
+            continue;
+        }
         target[len] = '\0';
 
         if (strncmp(target, prefix, prefix_len) == 0) {
             kill(pid, SIGKILL);
             kill(-pid, SIGKILL);
             ++killed;
-            LOGI("Cleaned up stale runtime process pid=%d ppid=%d (%s)", pid, ppid, target);
+            LOGI("Cleaned up stale runtime process pid=%d (%s)", pid, target);
         }
     }
 

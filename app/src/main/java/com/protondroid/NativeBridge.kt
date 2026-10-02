@@ -25,8 +25,11 @@ object NativeBridge {
 
     external fun killProcess(pid: Int, sig: Int): Boolean
 
-    /** 清理本应用遗留的 proot/wine 进程（应用被回收后成为孤儿的那些） */
-    external fun cleanupStaleProcesses(filesDir: String): Int
+    /**
+     * 清理本应用遗留的 proot/wine 进程（应用被回收后成为孤儿的那些）。
+     * @param activePid 当前活跃会话的 pid；若该进程仍存活则整个清理会被跳过
+     */
+    external fun cleanupStaleProcesses(filesDir: String, activePid: Int): Int
 
     /**
      * 轮询子进程状态。

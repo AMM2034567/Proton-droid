@@ -115,3 +115,51 @@ Android 10 (API 29) 起对新应用启用 **W^X 限制**：应用私有目录
 .\gradlew assembleDebug
 ```
 生成的 APK 安装到手机后，即可在界面中一键启动指定的 Windows 游戏，无需每次敲命令行！
+
+> 也可以走 GitHub Actions：推送到 `main`（`app/**`、`build.gradle.kts` 变更时）会自动
+> `assembleDebug` 并把 APK 传到 Artifacts，`workflow_dispatch` 还会顺带发布 Release。
+
+---
+
+## 第五步：运行期行为与常见坑（真机验证记录）
+
+### 存储权限
+
+`targetSdk = 28` 走 legacy storage：App 会在启动时申请
+`READ/WRITE_EXTERNAL_STORAGE` 运行时权限，授予后即可用**路径方式**访问
+`/sdcard/Download/ProtonDroid/`（游戏、`rootfs.tar.gz`、Proton 载荷）。
+Android 11+ 的「所有文件访问权限」只作为兜底提示，不再强制跳转设置页。
+
+> 注意：部分 ROM（如 ColorOS）不允许 `adb shell pm grant`，只能走应用内弹窗授权。
+
+### 停止游戏会终止整棵进程树
+
+`forkAndExec` 的子进程在 `execve` 前调用 `setpgid(0, 0)` 自建进程组，
+`stopSession` 对**进程组**发 `SIGTERM`/`SIGKILL`，因此
+`proot → wine → wineserver → wineboot → winedevice` 会被一次性收干净
+（早期版本只杀直接子进程，会留下 4 个孤儿进程）。
+
+### 残留进程自动清理
+
+应用进程被系统回收后，`proot` 会变僵尸、其下的 wine 进程可能被 reparent 到 init
+继续存活。App 启动时 / 启动新会话前 / 停止会话后都会调用
+`NativeBridge.cleanupStaleProcesses(filesDir, activePid)`：
+
+1. **若记录中的会话 pid 仍存活 ⇒ 整个清理直接跳过**（会话 pid 持久化在
+   `files/active-session.pid`）。真机验证：会话运行中触发清理会打印
+   `active session pid=… alive, skip sweep`，整棵 wine 进程树不受影响。
+   这里刻意**不**用「父进程链」判断残留 —— wine 的
+   `wineserver / wineboot / winedevice` 本来就 daemon 化（`PPid=1`），按父子关系
+   会把活跃会话当成孤儿误杀。
+2. 否则按「同 uid + `/proc/<pid>/exe` 位于本应用私有目录」匹配并 `SIGKILL`。
+   真机验证：删除会话记录后触发清理，9 个进程（proot + wine 系）被一次清空。
+
+### 本地编译注意（CMake 与沙箱）
+
+本地 `./gradlew assembleDebug` 时，CMake 会在 *Detecting C compiler ABI info* 阶段
+通过管道捕获编译器输出；若 DSH 运行在受限文件沙箱模式下，该步会因命名管道被禁止
+而挂死。改为 `danger-full-access` 后构建正常（增量约 6–60 秒）。
+本地 debug 构建使用 `<ANDROID_USER_HOME>/debug.keystore`，签名固定，
+因此后续可直接 `adb install -r` 覆盖安装、**不必清空 2.4GB 已解包运行时**。
+
+
