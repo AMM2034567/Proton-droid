@@ -1,6 +1,6 @@
 #!/data/data/com.termux/files/usr/bin/bash
 # ==============================================================================
-# Proton-droid: Universal Game Launcher
+# Proton-droid: Universal Game Launcher (Game Directory Aware)
 # ==============================================================================
 
 # 1. 确保音频服务运行
@@ -17,22 +17,27 @@ fi
 # 3. 唤醒 Termux-X11 窗口
 am start -n com.termux.x11/com.termux.x11.MainActivity 2>/dev/null || true
 
-# 4. 获取目标游戏路径
+# 4. 获取目标游戏绝对路径
 TARGET_EXE="$1"
 if [ -z "$TARGET_EXE" ]; then
-    # 默认自动检测 osu 安装器
-    TARGET_EXE="/sdcard/Download/ProtonDroid/games/osu/osu!install.exe"
+    TARGET_EXE="/sdcard/Download/ProtonDroid/games/osu/osu!.exe"
 fi
+
+GAME_DIR=$(dirname "$TARGET_EXE")
+EXE_NAME=$(basename "$TARGET_EXE")
 
 echo "=================================================="
 echo "Proton 11 ARM64 正在加载目标程序:"
-echo "$TARGET_EXE"
+echo "游戏目录: $GAME_DIR"
+echo "可执行文件: $EXE_NAME"
 echo "=================================================="
 
-# 5. 在容器内通过 Proton 独立启动器运行
+# 5. 切换到游戏目录执行，确保游戏能直接加载同目录下的 bass.dll / osu!ui.dll 等依赖
+export PROOT_NO_SECCOMP=1
 proot-distro login --shared-tmp debian -- bash -c "
 export DISPLAY=:0
 export PULSE_SERVER=127.0.0.1
-cd /opt/proton
-python3 proton_standalone.py run '$TARGET_EXE'
+export MONO_THREADS_SUSPEND=preemptive
+cd '$GAME_DIR'
+python3 /opt/proton/proton_standalone.py run './$EXE_NAME'
 "
