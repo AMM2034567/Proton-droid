@@ -30,15 +30,7 @@ diff --git a/dlls/wineandroid.drv/android.h b/dlls/wineandroid.drv/android.h
 diff --git a/dlls/wineandroid.drv/dllmain.c b/dlls/wineandroid.drv/dllmain.c
 --- a/dlls/wineandroid.drv/dllmain.c
 +++ b/dlls/wineandroid.drv/dllmain.c
-@@ -33,6 +33,7 @@ WINE_DEFAULT_DEBUG_CHANNEL(android);
- 
- 
- extern NTSTATUS CDECL wine_ntoskrnl_main_loop( HANDLE stop_event );
-+extern void ANDROID_InitDevice(void);
- static HANDLE stop_event;
- 
- 
-@@ -120,9 +121,25 @@ BOOL WINAPI DllMain( HINSTANCE inst, DWORD reason, LPVOID reserved )
+@@ -120,9 +120,17 @@ BOOL WINAPI DllMain( HINSTANCE inst, DWORD reason, LPVOID reserved )
      if (reason != DLL_PROCESS_ATTACH) return TRUE;
  
      DisableThreadLibraryCalls( inst );
@@ -55,17 +47,9 @@ diff --git a/dlls/wineandroid.drv/dllmain.c b/dlls/wineandroid.drv/dllmain.c
 +    params.start_device_callback = (UINT64)(UINT_PTR)android_start_device;
 +    {
 +        NTSTATUS status = ANDROID_CALL( init, &params );
-+        if (status)
-+        {
-+            ERR( "wineandroid: unix init returned %#x\n", (unsigned int)status );
-+            return FALSE;
-+        }
++        if (status) ERR( "wineandroid: unix init returned %#x\n", (unsigned int)status );
++        return !status;
 +    }
-+    /* 尽早把设备线程与 Java 桌面视图起来：屏幕尺寸要赶在主程序建窗之前就绪。
-+     * 放在 DllMain 里比"首个窗口"更早（上游是首个窗口时才做，Android 上太晚）。 */
-+    ANDROID_InitDevice();
-+    return TRUE;
-+
  }
 \ No newline at end of file
 
@@ -89,7 +73,16 @@ diff --git a/dlls/wineandroid.drv/opengl.c b/dlls/wineandroid.drv/opengl.c
 diff --git a/dlls/wineandroid.drv/init.c b/dlls/wineandroid.drv/init.c
 --- a/dlls/wineandroid.drv/init.c
 +++ b/dlls/wineandroid.drv/init.c
-@@ -525,7 +525,18 @@ static HRESULT android_init( void *arg )
+@@ -515,6 +515,8 @@ JavaVM **p_java_vm = NULL;
+ jobject *p_java_object = NULL;
+ unsigned short *p_java_gdt_sel = NULL;
+ 
++extern void ANDROID_InitDevice(void);
++
+ static HRESULT android_init( void *arg )
+ {
+     struct init_params *params = arg;
+@@ -525,7 +527,18 @@ static HRESULT android_init( void *arg )
      JavaVM *java_vm;
      void *ntdll;
  
@@ -109,13 +102,24 @@ diff --git a/dlls/wineandroid.drv/init.c b/dlls/wineandroid.drv/init.c
  
      p_java_vm = dlsym( ntdll, "java_vm" );
      p_java_object = dlsym( ntdll, "java_object" );
-@@ -537,7 +548,6 @@ static HRESULT android_init( void *arg )
+@@ -537,7 +550,6 @@ static HRESULT android_init( void *arg )
  
      pthread_mutexattr_init( &attr );
      pthread_mutexattr_settype( &attr, PTHREAD_MUTEX_RECURSIVE );
 -    pthread_mutex_init( &drawable_mutex, &attr );
      pthread_mutex_init( &win_data_mutex, &attr );
      pthread_mutexattr_destroy( &attr );
+ 
+@@ -561,6 +573,10 @@ static HRESULT android_init( void *arg )
+ #endif
+     }
+     __wine_set_user_driver( &android_drv_funcs, WINE_GDI_DRIVER_VERSION );
++    /* 尽早把设备线程与 Java 桌面视图起来：Java 报来的屏幕尺寸要赶在主程序建窗之前
++     * 被 init_monitors() 采用，否则窗口会以 0 尺寸建出来（真机实测窗口高度 0、屏幕全黑）。
++     * 放在这里（驱动初始化）比上游"首个窗口时才起"更早。 */
++    ANDROID_InitDevice();
+     return STATUS_SUCCESS;
+ }
  
 
 diff --git a/dlls/wineandroid.drv/window.c b/dlls/wineandroid.drv/window.c
