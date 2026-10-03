@@ -38,8 +38,16 @@ cd "$SRC" && git log --oneline -1
 
 log "2/5 构建 host 工具（x86_64 linux，跨编译 wine 需要 winebuild/widl/winegcc）"
 mkdir -p "$HOSTBUILD" && cd "$HOSTBUILD"
+# 注意：host 侧只需要 tools/，但 configure 仍会检查 X 等依赖 —— 必须显式 --without-x 等，
+# 否则会因缺 32 位 X 开发包直接 configure: error（首轮 CI 就栽在这里）。
+HOST_MINIMAL_OPTS=(
+  --without-x --without-freetype --without-alsa --without-pulse --without-oss
+  --without-coreaudio --without-cups --without-dbus --without-gnutls --without-ldap
+  --without-sane --without-usb --without-v4l2 --without-pcsclite --without-netapi
+  --without-krb5 --without-gstreamer --without-opencl
+)
 if [ ! -f config.status ]; then
-  "$SRC/configure" --disable-wineandroid.drv 2>/dev/null || "$SRC/configure"
+  "$SRC/configure" "${HOST_MINIMAL_OPTS[@]}" 2>&1 | tee "$OUT/configure-host.log" | tail -20
 fi
 # 只构建 host 侧工具即可
 make -j"$JOBS" tools/winebuild/winebuild tools/widl/widl tools/winegcc/winegcc tools/wmc/wmc tools/wrc/wrc 2>&1 | tail -5
