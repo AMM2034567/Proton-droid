@@ -17,25 +17,7 @@ diff --git a/dlls/wineandroid.drv/android.h b/dlls/wineandroid.drv/android.h
  extern void register_native_window( HWND hwnd, struct ANativeWindow *win, BOOL client );
  extern struct ANativeWindow *create_ioctl_window( HWND hwnd, BOOL opengl, float scale );
  extern struct ANativeWindow *grab_ioctl_window( struct ANativeWindow *window );
-@@ -87,7 +87,16 @@ extern void ANDROID_SetCursor( HWND hwnd, HCURSOR handle );
- extern BOOL ANDROID_CreateDesktop( const WCHAR *name, UINT width, UINT height );
- extern BOOL ANDROID_CreateWindow( HWND hwnd );
- extern void ANDROID_DestroyWindow( HWND hwnd );
--extern BOOL ANDROID_ProcessEvents( DWORD mask );
-+extern void ANDROID_InitDevice(void)
-+{
-+    if (desktop_tid) return;   /* 幂等 */
-+    /* 设备线程 + Java 桌面视图要尽早起来：这样 Java 报来的屏幕尺寸能在主程序建窗之前
-+     * 被 init_monitors() 采用。否则窗口会以 0 尺寸建出来（真机实测：窗口高度 0、屏幕全黑）。 */
-+    init_event_queue();
-+    start_android_device();
-+}
-+
-+BOOL ANDROID_ProcessEvents( DWORD mask );
- extern LRESULT ANDROID_DesktopWindowProc( HWND hwnd, UINT msg, WPARAM wp, LPARAM lp );
- extern void ANDROID_SetParent( HWND hwnd, HWND parent, HWND old_parent );
- extern void ANDROID_SetCapture( HWND hwnd, UINT flags );
-@@ -95,7 +104,7 @@ extern UINT ANDROID_ShowWindow( HWND hwnd, INT cmd, RECT *rect, UINT swp );
+@@ -95,7 +95,7 @@ extern UINT ANDROID_ShowWindow( HWND hwnd, INT cmd, RECT *rect, UINT swp );
  extern LRESULT ANDROID_WindowMessage( HWND hwnd, UINT msg, WPARAM wp, LPARAM lp );
  extern BOOL ANDROID_WindowPosChanging( HWND hwnd, UINT swp_flags, BOOL shaped, const struct window_rects *rects );
  extern BOOL ANDROID_CreateWindowSurface( HWND hwnd, BOOL layered, const RECT *surface_rect, struct window_surface **surface );
@@ -153,7 +135,23 @@ diff --git a/dlls/wineandroid.drv/window.c b/dlls/wineandroid.drv/window.c
  
      for (;;)
      {
-@@ -971,12 +975,21 @@ BOOL ANDROID_CreateWindow( HWND hwnd )
+@@ -953,6 +957,15 @@ LRESULT ANDROID_DesktopWindowProc( HWND hwnd, UINT msg, WPARAM wp, LPARAM lp )
+ /***********************************************************************
+  *           ANDROID_ProcessEvents
+  */
++void ANDROID_InitDevice(void)
++{
++    if (desktop_tid) return;   /* 幂等 */
++    /* 设备线程 + Java 桌面视图要尽早起来：这样 Java 报来的屏幕尺寸能在主程序建窗之前
++     * 被 init_monitors() 采用。否则窗口会以 0 尺寸建出来（真机实测：窗口高度 0、屏幕全黑）。 */
++    init_event_queue();
++    start_android_device();
++}
++
+ BOOL ANDROID_ProcessEvents( DWORD mask )
+ {
+     if (GetCurrentThreadId() == desktop_tid)
+@@ -971,12 +984,21 @@ BOOL ANDROID_CreateWindow( HWND hwnd )
  {
      TRACE( "%p\n", hwnd );
  
@@ -177,7 +175,7 @@ diff --git a/dlls/wineandroid.drv/window.c b/dlls/wineandroid.drv/window.c
          if (!(data = alloc_win_data( hwnd ))) return FALSE;
          release_win_data( data );
      }
-@@ -1240,6 +1253,15 @@ BOOL has_client_surface( HWND hwnd )
+@@ -1240,6 +1262,15 @@ BOOL has_client_surface( HWND hwnd )
   */
  BOOL ANDROID_CreateDesktop( const WCHAR *name, UINT width, UINT height )
  {
@@ -193,7 +191,7 @@ diff --git a/dlls/wineandroid.drv/window.c b/dlls/wineandroid.drv/window.c
      /* wait until we receive the surface changed event */
      while (!screen_width)
      {
-@@ -1250,5 +1272,7 @@ BOOL ANDROID_CreateDesktop( const WCHAR *name, UINT width, UINT height )
+@@ -1250,5 +1281,7 @@ BOOL ANDROID_CreateDesktop( const WCHAR *name, UINT width, UINT height )
          }
          process_events( QS_ALLINPUT );
      }
