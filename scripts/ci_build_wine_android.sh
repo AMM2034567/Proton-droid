@@ -56,7 +56,7 @@ if ls "$PATCH_DIR"/*.patch >/dev/null 2>&1; then
   # ⚠️ 只复位 dlls/wineandroid.drv/，**不要** `git checkout -- dlls/`：
   # 缓存恢复后工作区的 stat 与 git index 失配，整目录 checkout 会把 dlls/ 下所有源文件按新 mtime 重写，
   # make 就会重编 3000+ 个文件（run #10 实测：host 阶段 3159 个编译命令、白花 15 分钟）。
-  git -C "$SRC" checkout -- dlls/wineandroid.drv/ dlls/ntdll/unix/loader.c || echo "!! checkout 失败（继续尝试 apply）"
+  git -C "$SRC" checkout -- dlls/wineandroid.drv/ dlls/ntdll/unix/loader.c dlls/win32u/driver.c || echo "!! checkout 失败（继续尝试 apply）"
   for p in "$PATCH_DIR"/*.patch; do
     echo "--- apply $(basename "$p")"
     if ! git -C "$SRC" apply --verbose "$p"; then
