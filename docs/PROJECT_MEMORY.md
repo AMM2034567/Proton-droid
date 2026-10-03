@@ -1292,3 +1292,56 @@ cache\c2-retest.ps1 默认就用它 ⇒ 手机插上后只需 pwsh -File cache\c
   C2 真机验收后改回 `false`；注释已写明。
 
 本地验证：`assembleDebug` 通过，APK 16.7MB。
+
+### 16.10 C2 真机全天调试链（2026-10-04 晚）——每步都有真机证据
+
+| 补丁 | 上游缺陷 | 真机症状 | 结果 |
+|---|---|---|---|
+| v5 | `java_vm/java_object/java_gdt_sel` 没导出（`-fvisibility=hidden`） | `unix init returned 0xc0000005`（段错误）→ driver 初始化失败 | ✅ 驱动**首次初始化成功** |
+| v6 | `wait_events/process_events` 断言 `GetCurrentThreadId()==desktop_tid` | `EXCEPTION_WINE_ASSERTION` → 闪退 | ✅ 不再闪退 |
+| v7 | `init_event_queue()`+`start_android_device()` 只在 `ANDROID_CreateWindow` 的"桌面窗口"分支调用，而 win32u 先调 `pCreateDesktop` | `desktop_tid` 恒 0000、`screen_width` 恒 0 → 主线程死循环刷 WARN | ✅ 循环消失 |
+| v8 | `ANDROID_CreateDesktop` 是 BOOL 却 `return 0` | `explorer: manage_desktop failed to create desktop … error 0` | ✅ 桌面创建成功 |
+| v9 | （我们的诊断）win32u 选驱动失败原因不可见 | 仍 `nodrv_CreateWindow … The graphics driver is missing` | 🔄 编译中，见下 |
+
+**v7 的一个重要副产品**：日志里不再出现 `wait timed out` ⇒ **Java 侧桌面视图确实建起来了**，
+`wine_desktop_changed` 把屏幕尺寸送到了 wine（`screen_width` 被置位）——即 C 方案的
+"Java ↔ wine 事件通道"是通的 ✓。
+
+#### 16.10.1 架构性发现：子进程没有 JVM
+
+进程树（真机 `ps`）：
+```
+com.protondroid                        ← App 进程，有 JVM
+wineserver
+C:\windows\system32\explorer.exe       ← 独立进程 fork+exec
+c:\windows\system32\winecfg.exe        ← 独立进程
+```
+wine 的 `CreateProcess` 是 fork+exec ⇒ 子进程里 `java_vm/java_object` 为 NULL ⇒
+`wineandroid.drv` 在子进程里无法工作（日志：`nodrv_CreateWindow`，且它去试 mac/x11/wayland 默认列表）。
+**结论**：C 方案下目标程序必须作为**主程序在同进程内**运行（`wine_init` 的 `start_main_thread` 就在 App 进程）。
+已在 `WineActivity` 去掉 explorer：`cmd = { WINELOADER, cmdline }`（原来是
+`{loader, explorer.exe, "/desktop=shell,,android", cmdline}`，那会让目标程序变成子进程）。
+
+#### 16.10.2 驱动选择：win32u 读的是"按显示设备"的 HKLM 键
+
+- `dlls/win32u/driver.c:972` `load_desktop_driver()` 读
+  `\Registry\Machine\System\CurrentControlSet\Control\Video\{<GUID>}\0000` 的 `GraphicsDriver`；
+  `<GUID>` 取自桌面窗口的显示设备属性，无该属性时用**全零 GUID**（`guid_nullW`）。
+- 上游是靠 explorer 的 `/desktop=shell,,android` 第三字段：`programs/explorer/desktop.c:1011-1063`
+  打开 `HKCU\Software\Wine\Drivers` 并写 `GraphicsDriver`。
+- 我们不走 explorer ⇒ 在 `WineActivity.ensure_android_driver_registry()` 里自己写：
+  `user.reg` 的 `[Software\\Wine\\Drivers]` + `system.reg` 里
+  `CurrentControlSet` / `ControlSet001` 的 `Control\Video\*` 全部子键（含全零 GUID 键）。
+- **仍未生效**（真机仍报 `nodrv`）⇒ 补丁 v9 给 win32u 加了 ERR 诊断，打印它**实际打开的键路径**与读取结果：
+  `win32u: cannot open graphics driver key %s` / `win32u: no GraphicsDriver value in key %s`。
+  下一轮读 `files/log` 里这两行，就知道该写哪个键（或改用别的机制）。
+
+#### 16.10.3 C2 迭代姿势（每轮 5 分钟）
+```
+CI 编 wine → gh run download <run> -n wine-android-delta -D cache\delta-vN   # 7MB
+tar -xzf 到 cache\wine-delta-latest.tar.gz
+adb push → run-as 'cd files/arm64-v8a/lib/wine && tar xzf …'                # 设备自带 /system/bin/tar
+adb shell am force-stop com.protondroid && am start -n …WineActivity
+run-as cat files/log                                                        # wine 的 ERR/WARN 都在这
+```
+APK 侧改动（Java）不需要 CI，本地 `assembleDebug` + `adb install -r` 即可（3~8 秒）。

@@ -170,6 +170,8 @@ public class WineActivity extends Activity
             log.delete();
         }
 
+        ensure_android_driver_registry( prefix );
+
         createProgressDialog( 0, "Setting up the Windows environment..." );
 
         Log.i( LOGTAG, "abi=" + wine_abi + " bindir=" + bindir + " dlldir=" + dlldir );
@@ -191,6 +193,120 @@ public class WineActivity extends Activity
         Log.i( LOGTAG, "wine_init 返回（wine 已结束）" );
     }
 
+    /**
+     * 让 win32u 选中 wineandroid.drv。
+     *
+     * 上游是靠 explorer 的 /desktop=shell,,android 第三字段：programs/explorer/desktop.c 会把
+     * HKCU\Software\Wine\Drivers 的 GraphicsDriver 写成 wine<name>.drv，再由它同步到"按显示设备"的
+     * HKLM 键。而 win32u 真正读的是后者（dlls/win32u/driver.c 的 load_desktop_driver：
+     *   \Registry\Machine\System\CurrentControlSet\Control\Video\{<GUID>}\0000 的 GraphicsDriver）。
+     *
+     * 我们不走 explorer（fork 出的子进程没有 JVM ⇒ wineandroid.drv 起不来），所以两个位置都自己写。
+     * 没有显示设备 GUID 属性时 win32u 用全零 GUID（driver.c 里的 guid_nullW），故这里写全零 GUID 键。
+     */
+    private void ensure_android_driver_registry( File prefix )
+    {
+        String bs = String.valueOf( new char[]{ 92, 92 } );   /* wine .reg 的分隔符：两个反斜杠 */
+        String val = "\"GraphicsDriver\"=\"wineandroid.drv\"";
+        prefix.mkdirs();
+        append_reg_section( new File( prefix, "user.reg" ),
+                            "[Software" + bs + "Wine" + bs + "Drivers]",
+                            val );
+        /* win32u 读的是 \Registry\Machine\System\CurrentControlSet\Control\Video\{<GUID>}\0000，
+           而 <GUID> 取自桌面窗口的显示设备属性（前缀里已有 VideoID={40f6fb95-…} 这类值）。
+           为了不猜 GUID，直接给 system.reg 里**所有** Control\Video 子键都写上。 */
+        File sys = new File( prefix, "system.reg" );
+        String videoPrefix = "[System" + bs + "CurrentControlSet" + bs + "Control" + bs + "Video" + bs;
+        String videoPrefix2 = "[System" + bs + "ControlSet001" + bs + "Control" + bs + "Video" + bs;
+        int patched = patch_reg_sections( sys, videoPrefix, val );
+        patched += patch_reg_sections( sys, videoPrefix2, val );
+        if (patched == 0)
+        {
+            append_reg_section( sys,
+                                videoPrefix + "{00000000-0000-0000-0000-000000000000}" + bs + "0000]",
+                                val );
+            append_reg_section( sys,
+                                videoPrefix2 + "{00000000-0000-0000-0000-000000000000}" + bs + "0000]",
+                                val );
+        }
+        else
+        {
+            Log.i( LOGTAG, "registry: 给 " + patched + " 个 Video 键写入 GraphicsDriver=wineandroid.drv" );
+        }
+    }
+
+    /** 给所有以 sectionPrefix 开头的节补上 value（已有则跳过）。返回处理的节数。 */
+    private int patch_reg_sections( File reg, String sectionPrefix, String value )
+    {
+        if (!reg.isFile()) return 0;
+        try
+        {
+            java.util.List<String> lines = new java.util.ArrayList<String>();
+            BufferedReader r = new BufferedReader( new InputStreamReader( new FileInputStream( reg ), "UTF-8" ));
+            String line;
+            while ((line = r.readLine()) != null) lines.add( line );
+            r.close();
+            int count = 0;
+            for (int i = 0; i < lines.size(); i++)
+            {
+                if (!lines.get( i ).startsWith( sectionPrefix )) continue;
+                count++;
+                if (i + 1 < lines.size() && lines.get( i + 1 ).startsWith( "\"GraphicsDriver\"" )) continue;
+                lines.add( i + 1, value );
+                i++;
+            }
+            if (count == 0) return 0;
+            StringBuilder sb = new StringBuilder();
+            for (String l : lines) sb.append( l ).append( '\n' );
+            FileOutputStream out = new FileOutputStream( reg );
+            out.write( sb.toString().getBytes( "UTF-8" ));
+            out.close();
+            Log.i( LOGTAG, "registry: " + reg + " 处理了 " + count + " 个节" );
+            return count;
+        }
+        catch (Exception e)
+        {
+            Log.w( LOGTAG, "patch_reg_sections 失败: " + e );
+            return 0;
+        }
+    }
+
+    /** 若 .reg 里已有该节则跳过，否则追加（wine 启动时解析这两个文件）。 */
+    private boolean append_reg_section( File reg, String section, String value )
+    {
+        try
+        {
+            StringBuilder sb = new StringBuilder();
+            if (reg.isFile())
+            {
+                BufferedReader r = new BufferedReader( new InputStreamReader( new FileInputStream( reg ), "UTF-8" ));
+                String line;
+                while ((line = r.readLine()) != null)
+                {
+                    if (line.startsWith( section )) { r.close(); return true; }
+                    sb.append( line ).append( '\n' );
+                }
+                r.close();
+            }
+            else
+            {
+                sb.append( "WINE REGISTRY Version 2\n" );
+            }
+            sb.append( '\n' ).append( section ).append( ' ' ).append( System.currentTimeMillis() / 1000 ).append( '\n' );
+            sb.append( value ).append( '\n' );
+            FileOutputStream out = new FileOutputStream( reg );
+            out.write( sb.toString().getBytes( "UTF-8" ));
+            out.close();
+            Log.i( LOGTAG, "registry: " + value + " -> " + reg );
+            return true;
+        }
+        catch (Exception e)
+        {
+            Log.w( LOGTAG, "写注册表失败 " + reg + ": " + e );
+            return false;
+        }
+    }
+
     private final void runWine( String cmdline, HashMap<String,String> environ )
     {
         String[] env = new String[environ.size() * 2];
@@ -201,10 +317,10 @@ public class WineActivity extends Activity
             env[j++] = entry.getValue();
         }
 
-        String[] cmd = { environ.get( "WINELOADER" ),
-                         "c:\\windows\\system32\\explorer.exe",
-                         "/desktop=shell,,android",
-                         cmdline };
+        // C 方案：直接在主程序里跑 cmdline。**不要**用 explorer + /desktop：
+        // wine 的 CreateProcess 走 fork+exec，子进程没有 JVM ⇒ wineandroid.drv 起不来
+        // （真机实测 explorer.exe / winecfg.exe 都是独立进程、报 no driver could be loaded）。
+        String[] cmd = { environ.get( "WINELOADER" ), cmdline };
 
         String err = wine_init( cmd, env );
         Log.e( LOGTAG, err );
