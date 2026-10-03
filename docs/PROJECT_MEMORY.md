@@ -1679,3 +1679,30 @@ Termux 包名与下载 URL、以及 CI 的最小改动（≤6 处）。
   上游 xtajit 在 bionic 未验证，不作首选
 - Win16/DOS 时代 → 需 OTVDM/DOSBox（out of scope）；带反作弊的网游不支持
 - **Adreno 用户更有利**（Mesa Turnip）；Mali 需 `bcn_layer` + 格式修法
+
+
+## 17. 工作原则（用户明确要求，2026-10-03）
+
+> **动工前先检索，不要凭印象写代码/下结论。** 能查到的一律查（上游源码、官方文档、issue/bugzilla、
+> MR/提交记录、社区实现），并把**来源链接**记进本文档；查不到或无法核实的，必须显式标注
+> **「待真机/待验证」**，不得当作事实使用。
+
+具体执行规则（本项目内强制）：
+1. **先取证，再动手**：任何"上游是怎么做的/为什么这么写"的判断，都要落到**可核对的来源**
+   （上游文件路径 + 行号，或 URL），不允许用记忆或推测代替。
+2. **优先读一手材料**：上游源码（`gitlab.winehq.org/wine/wine` 的 raw 文件）、上游 release notes、
+   Bugzilla、wine-devel/wine-gitlab 邮件列表、MR 讨论；其次才是博客/聚合站点。
+3. **区分「已核实」与「推测」**：本文档里已核实的写"（已核实+链接）"，推测的写"（推测，待验证）"。
+   CI/真机能验证的判据要写清楚（例如 `llvm-readelf -d | grep NEEDED`、`files/log` 关键字）。
+4. **优先复用已验证的社区实现**：同一问题若已有项目解决（如 Winlator/GameNative 的 Vulkan layer+AHB、
+   Termux 的 bionic X11 包），先研究其做法与坑，再决定自研；不要从零试错。
+5. **版本/基线要落到具体 tag**：写清"哪个 release 起包含该改动"及其证据（MR 合并日期/commit/tag 日期），
+   不要把滚动 master 当基线。
+6. **踩坑要回写**：真机/CI 上出现的失败与修法，连同判据一起写进本文档对应小节，避免重复踩。
+
+**这条原则在本项目已经产生过实际收益（示例）**：
+- 检索发现**我们撞的黑屏是上游已修的 Bug 59213**（commit `d98061e1`），避免了继续自行试错；
+- 检索发现**上游 MR !10569 已把 wineandroid 改成"分离进程模型"**，说明我们手工补的 in-process 模型已废弃；
+- 检索发现**成功的"直呈"实现都不走 wineandroid.drv**（而是 Vulkan layer + AHardwareBuffer + SurfaceControl）；
+- 检索（读 wine-11.11 `configure.ac`/`aclocal.m4`）确定 **`winex11.drv` 的最小 X11 依赖**与
+  **必须用 `--x-includes/--x-libraries` 而非 `LDFLAGS`** 的关键细节。
