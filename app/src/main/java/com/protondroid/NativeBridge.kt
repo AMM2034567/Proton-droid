@@ -46,4 +46,12 @@ object NativeBridge {
     external fun nativeReleaseSurface()
 
     external fun nativeDrawTestPattern(color: Int): Boolean
+
+    /**
+     * 用 RTLD_GLOBAL 加载 .so（C 方案用）。
+     * wine 的 wineandroid.drv 初始化时会按**名字** dlopen("ntdll.so")/("wineandroid.so")，
+     * 需要这些库对全局命名空间可见；System.load 是 RTLD_LOCAL，且运行时改 LD_LIBRARY_PATH
+     * 依赖 android_update_LD_LIBRARY_PATH（现代 Android 上拿不到）⇒ 这里显式提升为 GLOBAL。
+     */
+    external fun nativeLoadGlobal(path: String): Boolean
 }

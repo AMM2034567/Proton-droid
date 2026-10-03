@@ -22,13 +22,26 @@ diff --git a/dlls/wineandroid.drv/android.h b/dlls/wineandroid.drv/android.h
 diff --git a/dlls/wineandroid.drv/dllmain.c b/dlls/wineandroid.drv/dllmain.c
 --- a/dlls/wineandroid.drv/dllmain.c
 +++ b/dlls/wineandroid.drv/dllmain.c
-@@ -123,6 +123,6 @@ BOOL WINAPI DllMain( HINSTANCE inst, DWORD reason, LPVOID reserved )
-     if (__wine_init_unix_call()) return FALSE;
+@@ -120,9 +120,17 @@ BOOL WINAPI DllMain( HINSTANCE inst, DWORD reason, LPVOID reserved )
+     if (reason != DLL_PROCESS_ATTACH) return TRUE;
+ 
+     DisableThreadLibraryCalls( inst );
+-    if (__wine_init_unix_call()) return FALSE;
++    if (__wine_init_unix_call())
++    {
++        ERR( "wineandroid: __wine_init_unix_call failed\n" );
++        return FALSE;
++    }
  
      params.register_window_callback = register_window_callback;
 -    params.start_device_callback = android_start_device;
+-    return !ANDROID_CALL( init, &params );
 +    params.start_device_callback = (UINT64)(UINT_PTR)android_start_device;
-     return !ANDROID_CALL( init, &params );
++    {
++        NTSTATUS status = ANDROID_CALL( init, &params );
++        if (status) ERR( "wineandroid: unix init returned %#x\n", (unsigned int)status );
++        return !status;
++    }
  }
 \ No newline at end of file
 
@@ -52,7 +65,27 @@ diff --git a/dlls/wineandroid.drv/opengl.c b/dlls/wineandroid.drv/opengl.c
 diff --git a/dlls/wineandroid.drv/init.c b/dlls/wineandroid.drv/init.c
 --- a/dlls/wineandroid.drv/init.c
 +++ b/dlls/wineandroid.drv/init.c
-@@ -537,7 +537,6 @@ static HRESULT android_init( void *arg )
+@@ -525,7 +525,18 @@ static HRESULT android_init( void *arg )
+     JavaVM *java_vm;
+     void *ntdll;
+ 
+-    if (!(ntdll = dlopen( "ntdll.so", RTLD_NOW ))) return STATUS_UNSUCCESSFUL;
++    if (!(ntdll = dlopen( "ntdll.so", RTLD_NOW )))
++    {
++        ERR( "wineandroid: dlopen(ntdll.so) failed: %s\n", dlerror() );
++        /* Android：按名字 dlopen 依赖 LD_LIBRARY_PATH 的运行时更新（android_update_LD_LIBRARY_PATH），
++           现代 Android 上拿不到该符号 ⇒ 退回全局命名空间查符号（Java 侧已用 RTLD_GLOBAL 预加载）。 */
++        if (!dlsym( RTLD_DEFAULT, "java_vm" ))
++        {
++            ERR( "wineandroid: java_vm not found in RTLD_DEFAULT either\n" );
++            return STATUS_UNSUCCESSFUL;
++        }
++        ntdll = RTLD_DEFAULT;
++    }
+ 
+     p_java_vm = dlsym( ntdll, "java_vm" );
+     p_java_object = dlsym( ntdll, "java_object" );
+@@ -537,7 +548,6 @@ static HRESULT android_init( void *arg )
  
      pthread_mutexattr_init( &attr );
      pthread_mutexattr_settype( &attr, PTHREAD_MUTEX_RECURSIVE );

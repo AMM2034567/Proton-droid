@@ -40,6 +40,18 @@ object WineAndroidPayload {
     /** 需要可执行位的路径前缀（相对 filesDir）。 */
     private val EXECUTABLE_PREFIXES = listOf("arm64-v8a/bin/")
 
+    /**
+     * 需要可执行位的具体文件名（相对 filesDir 的路径）。
+     * ⚠️ 真机踩过：wine 的装载器**不在** bin/，而在 lib/wine/aarch64-unix/{wine,wine-preloader}。
+     * 少了执行位，wine 就没法 exec 装载器去启动 wineboot，表现为
+     * `err:environ:run_wineboot failed to start wineboot 1` + prefix 建不起来。
+     */
+    private val EXECUTABLE_FILES = listOf(
+        "arm64-v8a/lib/wine/aarch64-unix/wine",
+        "arm64-v8a/lib/wine/aarch64-unix/wine-preloader",
+        "arm64-v8a/bin/wineserver",
+    )
+
     fun abiDir(context: Context): File = File(context.filesDir, "arm64-v8a")
 
     fun ntdllSo(context: Context): File =
@@ -75,15 +87,21 @@ object WineAndroidPayload {
         val publicPayload = File("/sdcard/Download/ProtonDroid/$TARBALL_NAME")
 
         if (!local.isFile || local.length() == 0L) {
-            when {
-                publicPayload.isFile -> {
+            // 公共目录可能因缺「所有文件访问」权限而 EACCES（真机实测：ColorOS 上 shell 也改不了 appops）。
+            // 拿不到就当没有，直接走下载，绝不因为备选路径失败而崩掉。
+            var copiedFromPublic = false
+            try {
+                if (publicPayload.isFile) {
                     onProgress("复制公共目录里的载荷: ${publicPayload.absolutePath}")
                     publicPayload.inputStream().use { input ->
                         FileOutputStream(local).use { output -> input.copyTo(output, 1 shl 20) }
                     }
+                    copiedFromPublic = local.length() > 0
                 }
-                else -> download(URL_PAYLOAD, local, onProgress)
+            } catch (e: Exception) {
+                onProgress("公共目录不可读（${e.javaClass.simpleName}: ${e.message}），改为下载")
             }
+            if (!copiedFromPublic) download(URL_PAYLOAD, local, onProgress)
         }
 
         // 解压后是 ~1.17GB（2539 文件 + 若干符号链接），先看设备空间够不够，别解到一半失败留下半棵树
@@ -98,7 +116,11 @@ object WineAndroidPayload {
         }
         local.delete()
 
-        check(isInstalled(context)) { "载荷安装后校验失败：缺少 ntdll.so 或 wineserver" }
+        // 校验只看关键文件，**不能**用 isInstalled()——它还要求 marker，而 marker 是下一步才写的，
+        // 真机上就是这么把自己判失败的（"载荷安装后校验失败"其实是装好了）。
+        check(ntdllSo(context).isFile && wineserver(context).isFile) {
+            "载荷安装后校验失败：缺少 ntdll.so 或 wineserver"
+        }
         File(context.filesDir, MARKER).writeText(TARBALL_NAME)
         onProgress("wine-android 载荷安装完成 ✅")
     }
@@ -212,7 +234,7 @@ object WineAndroidPayload {
                             }
                         }
                         val rel = target.relativeTo(destRoot).path.replace('\\', '/')
-                        if (EXECUTABLE_PREFIXES.any { rel.startsWith(it) }) {
+                        if (EXECUTABLE_PREFIXES.any { rel.startsWith(it) } || EXECUTABLE_FILES.contains(rel)) {
                             target.setExecutable(true, false)
                         }
                         target.setReadable(true, false)

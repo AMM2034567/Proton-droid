@@ -27,6 +27,35 @@
 extern "C" {
 
 /**
+ * 用 RTLD_GLOBAL 加载一个 .so（C 方案专用）。
+ *
+ * 为什么需要：wine 的驱动 dlls/wineandroid.drv 在 DllMain 里做
+ *   __wine_init_unix_call() 以及 android_init() 里的 dlopen("ntdll.so")
+ * —— 都是**按名字**解析。Android 上 `System.load(绝对路径)` 用的是 RTLD_LOCAL，
+ * 而且运行时改 LD_LIBRARY_PATH（依赖 android_update_LD_LIBRARY_PATH）在 API 35 上不可靠
+ * （wine 的 loader.c 用 dlsym(RTLD_DEFAULT, …) 拿这个符号，拿不到就静默不生效）。
+ * 所以这里用 RTLD_GLOBAL 再 dlopen 一次做“提升”，让按名字的解析与 RTLD_DEFAULT 查符号都能命中。
+ *
+ * @return true = dlopen 成功（或该库已加载）
+ */
+JNIEXPORT jboolean JNICALL
+Java_com_protondroid_NativeBridge_nativeLoadGlobal(JNIEnv *env, jobject /* this */, jstring jpath) {
+    if (jpath == nullptr) return JNI_FALSE;
+    const char *path = env->GetStringUTFChars(jpath, nullptr);
+    if (path == nullptr) return JNI_FALSE;
+    void *handle = dlopen(path, RTLD_NOW | RTLD_GLOBAL);
+    if (handle == nullptr) {
+        const char *err = dlerror();
+        LOGE("nativeLoadGlobal dlopen(%s) failed: %s", path, err ? err : "(no dlerror)");
+        env->ReleaseStringUTFChars(jpath, path);
+        return JNI_FALSE;
+    }
+    LOGI("nativeLoadGlobal ok: %s (handle=%p)", path, handle);
+    env->ReleaseStringUTFChars(jpath, path);
+    return JNI_TRUE;
+}
+
+/**
  * 获取系统内存分页大小 (Bytes)
  * 验证是否为标准 4KB (4096)
  */

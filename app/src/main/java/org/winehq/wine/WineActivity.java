@@ -140,6 +140,7 @@ public class WineActivity extends Activity
         File dlldir = new File( libdir, "wine" );
         File prefix = new File( getFilesDir(), "prefix-android" );
         File loader = new File( bindir, "wine" );
+        if (!loader.isFile()) loader = new File( dlldir, get_so_dir( wine_abi ) + "/wine" );
         String locale = Locale.getDefault().getLanguage() + "_" +
             Locale.getDefault().getCountry() + ".UTF-8";
 
@@ -171,10 +172,23 @@ public class WineActivity extends Activity
 
         createProgressDialog( 0, "Setting up the Windows environment..." );
 
-        System.load( dlldir.toString() + get_so_dir(wine_abi) + "/ntdll.so" );
+        Log.i( LOGTAG, "abi=" + wine_abi + " bindir=" + bindir + " dlldir=" + dlldir );
+        Log.i( LOGTAG, "WINELOADER=" + loader + " exists=" + loader.isFile() + " cmdline=" + cmdline );
+        String so_dir = dlldir.toString() + get_so_dir( wine_abi ) + "/";
+        for (String so : new String[]{ "ntdll.so", "win32u.so", "wineandroid.so" }) {
+            File f = new File( so_dir + so );
+            Log.i( LOGTAG, "System.load(" + f + ") exists=" + f.isFile() );
+            if (f.isFile()) System.load( f.toString() );
+            // 再用 RTLD_GLOBAL dlopen 一次做提升：wine 的驱动初始化会按名字 dlopen("ntdll.so")，
+            // 而 System.load 是 RTLD_LOCAL；运行时改 LD_LIBRARY_PATH 在现代 Android 上不可靠。
+            try { com.protondroid.NativeBridge.INSTANCE.nativeLoadGlobal( f.toString() ); }
+            catch (Throwable t) { Log.w( LOGTAG, "nativeLoadGlobal failed: " + t ); }
+        }
+        Log.i( LOGTAG, "ntdll.so loaded, prefix=" + prefix + " -> wine_init" );
         prefix.mkdirs();
 
         runWine( cmdline, env );
+        Log.i( LOGTAG, "wine_init 返回（wine 已结束）" );
     }
 
     private final void runWine( String cmdline, HashMap<String,String> environ )
