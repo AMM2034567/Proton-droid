@@ -956,4 +956,93 @@ E6 去掉虚拟桌面包装，直接 `wine dxvk_probe.exe`。
   「W1 的 vulkan-wsi-layer 对 DXVK 无效」，并把结论反馈给 C 方案（wineandroid.drv）的优先级评估。
 ```
 
+---
+
+## 16. C 方案（wineandroid.drv）实施计划 —— **主线已切换**
+
+> 决策（2026-10-04，用户拍板）：**放弃在 B 方案（内嵌 Xlorie）上继续攻坚，直接上 C 方案**。
+> 理由：B 的"最后一米"是 wine 的 win32-surface 上传路径（§14.8），而 Xlorie 是非标准 DDX
+> （DRI3 单向残缺、GLX 桩、Present flip 拒绝导入 FD 缓冲）、本质上无法服务标准客户端的 present；
+> 继续在上面做兼容是"给一个不标准的 X 服务器打补丁"，而 C 方案一次性取消整条 X 链。
+> B 方案的成果**保留**（`XServer`/`Xlorie` 代码、调试开关、探针、性能基线），作为对照与回退。
+
+### 16.1 关键前置事实（已核实，2026-10-04）
+
+1. **上游 wine 自带 Android 驱动**：`dlls/wineandroid.drv/`
+   （`WineActivity.java`、`android.h`、`android_native.h`、`device.c`、`init.c`、`window.c`、
+   `opengl.c`、`keyboard.c`、`dllmain.c`、`Makefile.in`、`build.gradle.in`、`AndroidManifest.xml`）。
+2. **上游构建系统原生支持 Android 构建**（`configure.ac` 实测摘录）：
+   ```
+   linux-android*)
+       enable_wineandroid_drv=${enable_wineandroid_drv:-yes}
+       WINE_CHECK_SONAME(GLESv2,glFlush)
+       AC_PATH_PROG([GRADLE], [gradle])
+       test -n "$GRADLE" || AC_MSG_ERROR([gradle is required for the Android build])
+       AC_SUBST([ANDROID_HOME],[$ANDROID_HOME])
+       aarch64) exec_prefix='${prefix}/arm64-v8a' ;;
+   ...
+   dlls/wineandroid.drv/wine-debug.apk: … gradle -q -Psrcdir=$srcdir assembleDebug
+   ```
+   ⇒ 只要 `--host=aarch64-linux-android` + `gradle` + `$ANDROID_HOME`，wine 就能编出
+   **自己带 Java 侧的 APK**。
+3. **Java 侧契约**（`WineActivity.java` 摘要，移植时要对齐）：
+   - native 方法：`wine_init()`、`wine_desktop_changed(w,h)`、`wine_config_changed(dpi)`、
+     `wine_surface_changed(int hwnd, Surface surface, boolean opengl)`、
+     `wine_motion_event(hwnd,action,x,y,state,vscroll)`、`wine_keyboard_event(hwnd,action,keycode,state)`
+   - 每个 HWND 对应一个 `WineView extends TextureView`（`onSurfaceTextureAvailable` 把 `Surface`
+     交给 native）⇒ **ANativeWindow 的来源**；
+   - 启动流程：把 APK assets（`files.sums`/`sums.sums`/`share/`/`<abi>/`）解到 `getFilesDir()` →
+     `System.load(<abi>/lib/wine/<so_dir>/{ntdll.so,win32u.so,wineandroid.so})` → 执行
+     `<abi>/lib/wine/<so_dir>/wine c:\windows\system32\explorer.exe /desktop=shell,android <cmd>`
+   - ABI 目录映射：`x86→i386-unix`、`x86_64→x86_64-unix`、`arm64-v8a→aarch64-unix`。
+4. **构建策略：只走 CI**（用户明确要求：本机带不动 wine 这种体量的构建）。
+   本机只做：写脚本/看日志/装产物/真机验证。
+
+### 16.2 里程碑与验收
+
+- **C0 ✅（已完成）侦察**：确认上游 `wineandroid.drv` + `configure.ac` Android 支持 + Java 契约。
+- **C1 🚧 构建管线**（本次落地）：CI（`ubuntu-latest` + NDK 27 + gradle 8.7）跑
+  `scripts/ci_build_wine_android.sh`，产出 aarch64-android wine 树（+ 若可能，wine 自带 APK）。
+  验收：configure 通过 + `make` 成功 + artifact 里能取到 `lib/wine/aarch64-unix/wine` 等产物。
+- **C2 最小可运行**：在我们 App 里跑起 Android wine，让其窗口/表面在 `SurfaceView` 上出画
+  （先用 wine 内建程序，如 `winecfg`/`notepad`/`explorer`）。
+- **C3 Vulkan/DXVK**：让 winevulkan 用 `VK_KHR_android_surface` 对 ANativeWindow 呈现，DXVK 出画。
+  **重要技巧**：测试程序可编成 **ARM64 Windows PE**（用 [llvm-mingw] 的 `aarch64-w64-mingw32` 工具链）
+  ⇒ **不需要 FEX 就能验证 D3D11/DXVK 全链**（FEX 留到 C4）⇒ 大幅降低 C3 风险。
+- **C4 x86 游戏**：引入 FEX（Android/aarch64 构建）+ WoW64，跑 x86/x86_64 游戏；输入/音频/存档。
+- **C5 性能与整合**：零拷贝呈现、帧调度、与既有 UI/游戏扫描/运行时分发整合；与 B 方案的基线对比。
+
+### 16.3 本次落地的产物
+
+- `.github/workflows/wine-android.yml`：手动触发（`workflow_dispatch`，输入 `wine_ref`/`api_level`），
+  磁盘清理 → JDK17 → 主机依赖 → gradle 8.7 → NDK 27 → 构建 → 上传 `configure/make` 日志与 artifacts。
+- `scripts/ci_build_wine_android.sh`：完整配方
+  （深度浅克隆 wine → 先构建 **host 工具** `winebuild/widl/winegcc`（交叉编译必需）→
+   `--host=aarch64-linux-android --with-wine-tools=<host build>` + 精简依赖
+   （`--without-x/freetype/alsa/pulse/oss/cups/dbus/gnutls/ldap/sane/usb/v4l2/pcsclite/netapi/krb5/gstreamer/opencl`）
+   → `make -j` → 收集 wine 树与 APK）。
+
+### 16.4 风险与开放问题
+
+1. **首轮大概率不通过**：`wineandroid.drv` 的代码年代较早（Alexandre 2013-2017 起），
+   现代 NDK/API 28 下需要补丁（历史上正有 "wineandroid.drv: experimental bring-up fixes for
+   Android 7.1.x" 这类补丁系列）——预期要迭代几轮 CI。
+2. **依赖**：第一轮先 `--without-freetype`（字体渲染缺失，可接受）；后续再为 target 交叉编译
+   freetype（以及 zlib/libxml2 等按需）。
+3. **DXVK/VKD3D**：载荷里的 `aarch64-windows` DXVK 可直接复用（wine 的 win32 表面 → winevulkan →
+   `VK_KHR_android_surface`）；若 ABI/符号不匹配则需重编（CI 里加 DXVK 构建）。
+4. **W^X**：App 仍须 `targetSdk=28`（见 §2/§8.2 的踩坑），否则 app 私有目录的 `execve`/`PROT_EXEC` 被拒。
+5. **Java 侧整合**：我们要把 wine 的 `WineActivity` 移植/裁剪进 Proton-droid（或用其 APK 作为参考），
+   并把"每个 HWND 一个 TextureView"的模型与我们的游戏启动 UI 融合。
+6. **许可**：wine 是 LGPL-2.1+（动态链接合规）；Android 驱动与 Java 侧一并纳入
+   `docs/THIRD_PARTY_NOTICES.md`。
+
+### 16.5 下一步（按顺序）
+
+1. 触发 CI 首轮（`gh workflow run "Build wine for Android (C 方案)" -f wine_ref=wine-11.0`），
+   读 `configure-android.log` 里的首个错误 → 打补丁（可能需要在 CI 里 `git apply` 本地补丁）。
+2. C1 通过后：把产出的 wine 树装进 App，按 §16.1.3 的契约起窗口（C2）。
+3. C2 出画后：接 DXVK + vulkaninfo 验证 `VK_KHR_android_surface`（C3），必要时用 llvm-mingw 编
+   ARM64 Windows PE 版 DXVK 探针。
+
 

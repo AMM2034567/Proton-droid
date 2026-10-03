@@ -1,0 +1,95 @@
+name: Build wine for Android (C 方案)
+
+# C 方案（wineandroid.drv）的构建管线：产出 aarch64-android 版 wine + wine 自带 APK。
+# 只在手动触发 / 打 tag 时运行（单次 30~90 分钟，不要挂在每次 push 上）。
+on:
+  workflow_dispatch:
+    inputs:
+      wine_ref:
+        description: 'wine 源码 ref（tag 或分支）'
+        required: false
+        default: 'wine-11.0'
+      api_level:
+        description: 'Android API level（NDK 目标）'
+        required: false
+        default: '28'
+  push:
+    tags:
+      - 'wine-android-*'
+
+permissions:
+  contents: write
+
+jobs:
+  build-wine-android:
+    name: Build wine (aarch64-android)
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+
+    steps:
+      - name: 检出 Proton-droid
+        uses: actions/checkout@v4
+
+      - name: 释放磁盘空间（wine 构建需要大量空间）
+        run: |
+          df -h /
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android/sdk/ndk/2[0-6].* /opt/ghc /usr/local/share/boost || true
+          df -h /
+
+      - name: 配置 JDK 17（gradle 需要）
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: 安装主机侧构建依赖
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq build-essential autoconf bison flex pkg-config \
+            gettext gcc-multilib libtool python3 git unzip wget
+
+      - name: 安装 gradle 8.x（wine 的 Android 构建硬性要求）
+        run: |
+          GRADLE_VER=8.7
+          wget -q "https://services.gradle.org/distributions/gradle-${GRADLE_VER}-bin.zip" -O /tmp/gradle.zip
+          sudo unzip -q /tmp/gradle.zip -d /opt
+          sudo ln -sf "/opt/gradle-${GRADLE_VER}/bin/gradle" /usr/local/bin/gradle
+          gradle --version | head -6
+
+      - name: 安装 NDK 27
+        run: |
+          echo "ANDROID_HOME=$ANDROID_HOME"
+          yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses >/dev/null 2>&1 || true
+          $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --install "ndk;27.2.12479018" "platform-tools"
+          ls -d $ANDROID_HOME/ndk/*
+
+      - name: 构建 wine (aarch64-android)
+        env:
+          WINE_REF: ${{ github.event.inputs.wine_ref || 'wine-11.0' }}
+          ANDROID_API: ${{ github.event.inputs.api_level || '28' }}
+          JOBS: '4'
+        run: |
+          chmod +x scripts/ci_build_wine_android.sh
+          ./scripts/ci_build_wine_android.sh
+        continue-on-error: true
+
+      - name: 上传构建日志与产物
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: wine-android-build
+          path: |
+            wine-out/configure-android.log
+            wine-out/make-android.log
+            wine-out/artifacts/**
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: 构建摘要
+        if: always()
+        run: |
+          echo "### wine (aarch64-android) 构建" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          tail -30 wine-out/configure-android.log 2>/dev/null >> $GITHUB_STEP_SUMMARY || true
+          echo "" >> $GITHUB_STEP_SUMMARY
+          tail -30 wine-out/make-android.log 2>/dev/null >> $GITHUB_STEP_SUMMARY || true
