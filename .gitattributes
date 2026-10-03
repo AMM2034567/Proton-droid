@@ -1,0 +1,13 @@
+# 统一行尾，避免 Windows 检出后 shell 脚本带 CRLF 导致 CI 里 bash 报 "\r: command not found"
+*.sh text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.md text eol=lf
+*.kt text eol=lf
+*.java text eol=lf
+*.kts text eol=lf
+*.c text eol=lf
+*.h text eol=lf
+*.txt text eol=lf
+*.json text eol=lf
+*.pro text eol=lf

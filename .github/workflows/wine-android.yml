@@ -69,6 +69,8 @@ jobs:
           ANDROID_API: ${{ github.event.inputs.api_level || '28' }}
           JOBS: '4'
         run: |
+          # 兜底：确保脚本是 LF（Windows 检出可能带 CRLF）
+          sed -i 's/\r$//' scripts/ci_build_wine_android.sh
           chmod +x scripts/ci_build_wine_android.sh
           ./scripts/ci_build_wine_android.sh
         continue-on-error: true
