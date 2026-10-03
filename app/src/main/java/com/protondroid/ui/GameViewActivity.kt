@@ -1,7 +1,9 @@
 package com.protondroid.ui
 
+import android.content.Intent
 import android.os.Build
 import android.os.Bundle
+import android.util.Log
 import android.view.SurfaceHolder
 import android.view.View
 import android.view.WindowInsets
@@ -11,6 +13,7 @@ import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
 import com.protondroid.ProtonStatus
 import com.protondroid.R
+import com.protondroid.display.DisplayBackend
 import com.protondroid.display.XServer
 import com.protondroid.service.ProtonForegroundService
 import com.termux.x11.LorieView
@@ -18,8 +21,11 @@ import com.termux.x11.LorieView
 /**
  * 游戏视窗。
  *
- * 显示路径（B 方案）：内嵌 X 服务器（Termux-X11 的 `libXlorie.so`）把 X 画面
- * 通过 EGL 合成到本页的 [LorieView]；wine 以 `DISPLAY=:0` 连到同一个 X 服务器。
+ * 两条后端（见 [DisplayBackend]）：
+ *  - B 方案（默认 `x11`）：内嵌 X 服务器（Termux-X11 的 `libXlorie.so`）把 X 画面通过 EGL 合成到
+ *    本页的 [LorieView]；wine 以 `DISPLAY=:0` 连到同一个 X 服务器；
+ *  - C 方案（`android`）：**不启 X**，直接把 `org.winehq.wine.WineActivity` 拉到前台，
+ *    由 `wineandroid.drv` 直接往 `ANativeWindow` 呈现。
  */
 class GameViewActivity : AppCompatActivity() {
 
@@ -37,13 +43,27 @@ class GameViewActivity : AppCompatActivity() {
 
     companion object {
         const val EXTRA_GAME_PATH = "extra_game_path"
+        private const val TAG = "GameViewActivity"
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        setContentView(R.layout.activity_game_view)
 
         gamePath = intent.getStringExtra(EXTRA_GAME_PATH) ?: ""
+
+        // ── C 方案分支：不启 X 服务器，直接把 wine 的 Activity 拉到前台 ──
+        // 后端选择见 DisplayBackend（files/display_backend.txt，默认 x11 ⇒ 老路径不回归）。
+        if (DisplayBackend.isAndroid(this)) {
+            val wineCmdline = windowsCmdlineFor(gamePath)
+            Log.i(TAG, "display_backend=android ⇒ 启动 WineActivity, cmdline=$wineCmdline")
+            val intent = Intent().setClassName(this, "org.winehq.wine.WineActivity")
+            if (wineCmdline != null) intent.putExtra("cmdline", wineCmdline)
+            startActivity(intent)
+            finish()
+            return
+        }
+
+        setContentView(R.layout.activity_game_view)
 
         lorieView = findViewById(R.id.surface_game_view)
         tvGameTitle = findViewById(R.id.tv_game_title)
@@ -79,6 +99,14 @@ class GameViewActivity : AppCompatActivity() {
         gameLaunched = true
         ProtonForegroundService.startService(this, gamePath)
     }
+
+    /**
+     * 把 Android 侧路径转成 wine 能认的 Windows 路径。
+     * wine 默认把 `/` 映射成 `Z:`，所以 `/sdcard/Download/a.exe` → `Z:\sdcard\Download\a.exe`。
+     * 传空表示不指定（WineActivity 走它自己的默认程序 winecfg.exe）。
+     */
+    private fun windowsCmdlineFor(hostPath: String): String? =
+        if (hostPath.isEmpty()) null else "Z:" + hostPath.replace('/', '\\')
 
     override fun onStart() {
         super.onStart()

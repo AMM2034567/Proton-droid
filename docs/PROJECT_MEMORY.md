@@ -1276,3 +1276,19 @@ pwsh -File cache\c2-retest.ps1
 **已 staged（无需手机）**：补丁 v6 的增量包已下到 cache\wine-delta-latest.tar.gz（7.35MB，run 37120771950），
 cache\c2-retest.ps1 默认就用它 ⇒ 手机插上后只需 pwsh -File cache\c2-retest.ps1。
 校验：v6 的 wineandroid.so 779672B / sha256 C8F78087…（v5 是 779704B / C7B0CF89…，确认窗口改动已进包）。
+
+#### 16.8.1 C2c：C 方案已接进游戏入口（2026-10-04）
+
+不再依赖 adb 手动拉起：
+- 新增 `app/src/main/java/com/protondroid/display/DisplayBackend.kt`：
+  读 `<filesDir>/display_backend.txt`（`x11` 默认 / `android`），非法或缺失一律回落 `x11` ⇒ **老路径不回归**；
+  `set()` 供 UI/调试切换。adb 切换：
+  `adb shell "run-as com.protondroid sh -c 'echo android > files/display_backend.txt'"`
+- `ui/GameViewActivity.kt`：`onCreate` **先判断后端**——`android` 时**不启 X 服务器**，
+  直接 `startActivity(org.winehq.wine.WineActivity)` 并 `finish()`；并把游戏路径转成 wine 路径传
+  `cmdline`（`/sdcard/x/a.exe` → `Z:\sdcard\x\a.exe`，wine 默认把 `/` 映射成 `Z:`）。
+  `x11` 时完全走原来的内嵌 X 流程。
+- `AndroidManifest.xml`：`WineActivity` 的 `exported` 暂时仍为 `true`（调试期 adb 直拉方便），
+  C2 真机验收后改回 `false`；注释已写明。
+
+本地验证：`assembleDebug` 通过，APK 16.7MB。
