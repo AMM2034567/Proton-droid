@@ -1,8 +1,10 @@
 # Proton-droid 项目记忆（Project Memory）
 
-> 最后更新：2026-10-04（B 方案第一步落地，待真机验证）
-> 状态：**「游戏无法启动」已修复并在真机逐层验证**；显示层 **B 方案（内嵌 libXlorie）代码已落地且构建通过**，
-> 真机验证因 adb 设备掉线未完成（见 §8.2 进度 / §11 P0-5）；终态演进到 **C（wineandroid.drv）**。
+> 最后更新：2026-10-04（B 方案真机打通、游戏出画面；Vulkan WSI 桥已规划，见第 14 节）
+> 状态：**B 方案（内嵌 libXlorie）已真机验证** —— 内嵌 X 服务器 ↔ guest ↔ wine 全链路打通，
+> 真实 .NET 游戏 GooseDesktop 已在 App 内活跃渲染（§8.2 第 5 条、§11 P0-6）。
+> 3D 游戏（DXVK）仍不通，卡在 **Vulkan WSI**（`VK_KHR_xcb_surface is not supported`）→ 方案见 **第 14 节（未动工）**。
+> 终态演进到 **C（wineandroid.drv）**。
 > 正式版方向：**App 内置下载 rootfs 与编译好的 Proton 产物**（产物走自己打包 → GitHub Release），见第 12 节。
 > 本文件是下次开工的第一入口；改动运行链路的代码前请先读第 2 节「铁律」。
 >
@@ -401,8 +403,9 @@ git -c credential.helper= -c http.proxy=http://127.0.0.1:10809 `
       （GooseDesktop 的透明覆盖窗显示为白/蓝块）；音频 `mmdevapi` 无后端
       （`pulse,alsa,oss,coreaudio` 全部加载失败）→ 归入 P3。
 7. ⬜ 记录性能基线（帧率、CPU/GPU 占用），作为 C 方案的对比依据。
-   **下一批要做的**：DXVK/Vulkan WSI 桥（日志已确认 `VK_KHR_xcb_surface is not supported`，
-   所以 DXVK 走不通 X11 present）、osu! 更新器绕过方案、音频后端、rootfs 内置上述库。
+   **下一批要做的**：**Vulkan WSI 桥 —— 方案已完整落在 §14（规划完成、未动工，含 ICD 候选、
+   presenter 选择、W0/W1/W2 分阶段与验收标准）**；其余：osu! 更新器绕过、音频后端、
+   将 libgnutls/libgcrypt × DNS 等环境修复固化进 rootfs 打包脚本。
 8. ⬜ GPL 合规三件套（LICENSE + `licenses/` + App 内开源许可页），见 `docs/THIRD_PARTY_NOTICES.md`。
 
 **P1 — 正式版运行时下载与发布链路**（见第 12 节）
@@ -526,5 +529,142 @@ Proton 产物下载并装配好。
 
 较大改动的 commit message 末尾加一行：`Memory: 已更新 docs/PROJECT_MEMORY.md §X`（或说明为何无需更新），
 便于回溯「哪次改动改了记忆、哪次漏了」。
+
+---
+
+## 14. Vulkan WSI 桥（规划中 —— **未动工**）
+
+> 状态：**仅规划，未写任何代码**（用户 2026-10-04 明确要求先落记忆）。
+> 这一节是 3D 游戏（D3D9/10/11/12 → DXVK/VKD3D → Vulkan）能不能跑起来的**唯一硬缺口**。
+
+### 14.1 问题陈述与现场证据
+
+B 方案把 X11 显示链路打通了（§8.2），但 **D3D→Vulkan 的呈现链路不通**。真机日志（wine vulkan 初始化）：
+
+```text
+00cc:warn:vulkan:vulkan_init_once Extension "VK_KHR_xcb_surface" is not supported.     ← 实际截取到的原话
+00cc:warn:vulkan:vulkan_init_once Extension "VK_KHR_display" is not supported.
+00cc:warn:vulkan:vulkan_init_once Extension "VK_EXT_acquire_xlib_display" is not supported.
+00cc:warn:vulkan:init_physical_device Extension "VK_ANDROID_external_memory_android_hardware_buffer" is not supported.
+00cc:warn:wgl:egl_init EGL support is disabled.
+```
+（`VK_KHR_xlib_surface` 属于同族 WSI 扩展；我们的日志截取里逐条列出的是上面这些，写代码前用
+`vulkaninfo | grep -i surface` 再确认一次设备实际支持的 surface 扩展面。）
+
+机制：DXVK 不认识 Win32 窗口，它依赖 winevulkan 把 HWND 映射成 **X11 surface**（`VK_KHR_xcb_surface`/`VK_KHR_xlib_surface`），
+再 `vkCreateSwapchainKHR` 呈现。而 Android 上的 Vulkan ICD（Mali 厂商驱动）只提供
+**`VK_KHR_android_surface`**（面向 `ANativeWindow`），既没有 XCB/XLIB，也不暴露
+`VK_ANDROID_external_memory_android_hardware_buffer` → swapchain 建不出来。
+
+同时，我们的内嵌 X 服务器（libXlorie）**不是** DRM/DRI3 的 GPU 合成器：它的后端是 gralloc/AHardwareBuffer 共享内存，
+不能充当「DRM render node 的代理」。所以桥必须做在 **Vulkan 这一层**，而不是 X 服务器里。
+
+### 14.2 前置问题：guest 需要一个「glibc 可用的 Vulkan ICD」
+
+真机 recon（2026-10-04）：
+
+| 位置 | 内容 | 对 guest 可用性 |
+| --- | --- | --- |
+| host `/system/lib64/libvulkan.so` | Android Vulkan loader | ✗ bionic |
+| host `/vendor/lib64/hw/vulkan.mali.so` → `mt6895/vulkan.mali.so` | MT6895（天玑 8100）Mali 厂商 ICD | ✗ bionic（双 libc 问题） |
+| guest `/usr/lib/aarch64-linux-gnu/libvulkan.so.1`（1.4.309） | Mesa Vulkan loader（glibc） | ✅ |
+| guest `/usr/share/vulkan/icd.d/` | `lvp`(**lavapipe**) `freedreno` `broadcom` `gfxstream` `nouveau` … | ✅ 现成可用 |
+| guest 内嵌 X 服务器扩展（`xdpyinfo -display :0`） | **MIT-SHM、DRI3、Present**、Composite、DAMAGE、DOUBLE-BUFFER、GLX、RANDR、SYNC、XFIXES、XInputExtension、XKEYBOARD…（共 23 个） | ✅ presenter 有落点 |
+
+ICD 候选（**开工第一步就是在这张表里做选择**）：
+
+| 方案 | 可行性 | 性能 | 主要风险 |
+| --- | --- | --- | --- |
+| **lavapipe**（Mesa 软件 Vulkan） | ✅ guest 已装，立刻可验证 | 极低（纯 CPU） | 无 —— 只用于打通/回归 DXVK 链路 |
+| **ARM DDK 的 glibc `libmali`**（x11/gbm flavor） | 需与设备 `mali_kbase` 内核驱动 DDK 版本匹配（MT6895） | 高（真 GPU） | 版本匹配困难；DDK 分发许可 |
+| Mesa **PanVK**（glibc） | ✗ 需 panfrost/panthor 内核驱动 | 中 | 原厂内核只有 `mali_kbase` |
+| bionic Mali blob + glibc 桥 | 理论可行 | 高 | 双 libc（`libc`/`malloc`/`pthread` 符号冲突），工程量最大 |
+| Zink/VirGL 转发（额外服务） | 需 GL 侧配合 | 低~中 | 多一个进程与拷贝，仍缺 Vulkan WSI |
+
+### 14.3 桥的设计：直接用 Arm 的 `vulkan-wsi-layer`
+
+**Arm `vulkan-wsi-layer`** 是一个 **Vulkan 隐含层（implicit layer）**，专门给「ICD 自己没有 WSI」的场景补上
+X11/Wayland surface 与 swapchain —— 其 README 明确点名 **Mali 厂商驱动（无 DRM render node）** 就是目标场景之一。
+它实现的接口正好覆盖 DXVK 的需求：
+
+- instance：`VK_KHR_surface`、`VK_KHR_xcb_surface`/`VK_KHR_xlib_surface`、`VK_KHR_wayland_surface`、
+  `VK_KHR_get_surface_capabilities2`、`VK_EXT_headless_surface`
+- device：`VK_KHR_swapchain`、`VK_KHR_shared_presentable_image`、`VK_KHR_present_id`、`VK_EXT_swapchain_maintenance1`
+
+presenter 与我们的匹配度（Sky1 fork 的三档路由）：
+
+| presenter | 依赖 | 我们有吗 |
+| --- | --- | --- |
+| Wayland bypass（DMA-BUF 零拷贝） | Xwayland + Wayland 合成器 + `zwp_linux_dmabuf_v1` | ✗ 我们是纯 X |
+| DRI3（XCB Present，COPY） | **guest 侧 DRM render node**（`/dev/dri/renderD*`）+ X 服务器 DRI3 | X 服务器 ✓ 有 DRI3，但 guest 侧无 render node ✗（待确认 Xlorie 的 DRI3 是否为标准 GEM 语义） |
+| **SHM（MIT-SHM CPU 拷贝）** | XCB + MIT-SHM | ✅ **两个条件都满足 → 首选** |
+
+⇒ **首选 SHM presenter**，装法：编译出 `libVkLayer_window_system_integration.so` + JSON，放进 guest 的
+`/usr/share/vulkan/implicit_layer.d/`（loader 自动加载，用 `VK_LOADER_DEBUG=layer` 验证）；
+必要时用 `WSI_NO_WAYLAND_BYPASS=1` 之类开关强制走 SHM。
+SHM 的代价是每帧一次 CPU 拷贝（2288x1080 ≈ 9.9 MB/帧），AArch64 上可用 NEON 优化拷贝，
+先要功能、后谈性能。
+
+### 14.4 分阶段计划（建议顺序，含验收标准）
+
+**W0 —— 功能基线（成本最低，先做）**
+在 guest 里用 **lavapipe** + Mesa 自带 X11 WSI，把
+`DXVK → Vulkan → X11 surface → 内嵌 X 服务器 → EGL → SurfaceView` 整条链路跑通（哪怕只有几帧）。
+验收：
+1. `DISPLAY=:0 vulkaninfo --summary` 能看到 lavapipe 设备且 **含 `VK_KHR_xcb_surface`**；
+2. DXVK 日志出现设备创建、`Present` 计数增长；
+3. 真机截图出现 3D 画面（不是黑屏/纯色）。
+可调开关：`VK_ICD_FILENAMES`（锁 lavapipe）、`VK_LOADER_DEBUG=all`、`DXVK_LOG_LEVEL=info`、
+必要时 `MESA_VK_WSI_PRESENT_MODE=immediate`；变量都能经 `files/extra_env.txt` 免重编注入。
+
+**W1 —— 真 GPU 的 WSI 桥（主攻）**
+1. 先按 §14.2 定 ICD 来源（优先「ARM DDK glibc libmali」，否则评估 bionic 桥）；
+2. `VK_ICD_FILENAMES=<icd.json>` 指定后，用 `vulkaninfo` 确认设备枚举与扩展面；
+3. ICD 缺 X11 WSI → 编译并装 **vulkan-wsi-layer（SHM presenter）**；ICD 自带 X11 WSI → 直接跳过层；
+4. 验收：`vulkaninfo` 列出 Mali 设备 + `VK_KHR_xcb_surface`；DXVK 游戏出画面并记录帧率（回填 §11 P0-7 性能基线）。
+
+**W2 —— 终态（C 方案，见 §8.3）**
+`wineandroid.drv` 让 winevulkan 直接拿 `ANativeWindow` → `vkCreateAndroidSurfaceKHR`，
+把 X 与 WSI 层一起取消，并顺带解决「CPU 拷贝 presenter」的带宽问题。
+
+### 14.5 改动落点
+
+- **W0/W1 不需要改 wine 本体**：全靠 guest 内的 loader + ICD + layer 三者搭配，
+  App 侧只在环境变量里给 `VK_ICD_FILENAMES` / `VK_LAYER_PATH`（`files/extra_env.txt` 即可）。
+- 真正需要改 App/gradle 的只有：**把选定 ICD/层作为运行时资产打包**（走 §12 的 manifest 链路更好）。
+- 若 SHM 拷贝成瓶颈：要么做 C 方案（wineandroid.drv，直接呈现到 SurfaceView），
+  要么给 Xlorie 补「DRI3 → gralloc」的零拷贝路径（大改，需评估 Termux-X11 上游进展，
+  例如 [termux-x11#979](https://github.com/termux/termux-x11/issues/979) 里 X server ↔ Android Surface 的同步/帧调度讨论）。
+
+### 14.6 风险与开放问题（开工前先确认）
+
+1. **双 libc**：bionic 的 Mali blob 能否在 glibc guest 进程里 dlopen（先看 `libmali` 的 NEEDED 与符号），
+   这个决定 §14.2 里两条高成本路线的取舍。
+2. **Xlorie 的 DRI3 语义**：是标准 DRM GEM handle 还是 gralloc fd？决定能否用 DRI3 presenter 走零拷贝。
+3. **lavapipe 性能**：2288x1080 下能否跑通 DXVK（可能只有个位数帧率，仅作功能验证）。
+4. **FEX + Vulkan 交互**：我们已经见过一次 FEX WOW64 `c0000005`（§11 P0-6c），GPU 路径是否更不稳需要观察。
+5. **许可**：`vulkan-wsi-layer` 是 MIT ✓；ARM DDK Mali 用户态 blob 的分发许可必须确认
+   （并入 `docs/THIRD_PARTY_NOTICES.md`）。
+
+### 14.7 参考资料
+
+- Arm 上游：<https://gitlab.freedesktop.org/mesa/vulkan-wsi-layer>
+- ginkage fork（补 X11 MIT-SHM）：<https://github.com/ginkage/vulkan-wsi-layer>
+- Sky1 fork（多 presenter、Mali 场景、`WSI_NO_WAYLAND_BYPASS` 等开关）：<https://github.com/Sky1-Linux/vulkan-wsi-layer>
+- Winlator 内部机制（Turnip/bionic 路线，作为对照）：<https://github.com/leegao/winlator-internals>
+- Termux-X11 X server ↔ Surface 同步/帧调度：<https://github.com/termux/termux-x11/issues/979>
+- Vulkan WSI 规范：<https://docs.vulkan.org/spec/latest/chapters/VK_KHR_surface/wsi.html>
+
+### 14.8 开工时的第一步（照抄）
+
+```sh
+# 0) 确认 guest 侧 lavapipe + X11 WSI 是否现成（W0 验证，不改代码）
+run-as com.protondroid sh -c 'cd files && \
+  PROOT_LOADER=$PWD/bin/loader PROOT_TMP_DIR=$PWD/tmp LD_LIBRARY_PATH=$PWD/bin PROOT_NO_SECCOMP=1 \
+  ./bin/proot -r $PWD/rootfs/debian/rootfs -0 -b $PWD/tmp:/tmp \
+  /usr/bin/env DISPLAY=:0 PATH=/usr/bin:/bin VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.aarch64.json \
+  VK_LOADER_DEBUG=all vulkaninfo --summary'
+# 期望：看到 lavapipe 设备 + VK_KHR_xcb_surface；若报 surface 扩展缺失，就是 W1 要补的层。
+```
 
 
