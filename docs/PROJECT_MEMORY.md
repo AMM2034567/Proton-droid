@@ -1609,3 +1609,41 @@ wine+application"）。我们的 C 基线正是 **native aarch64 wine（PE 侧 A
   ② 直呈后端 —— 照 Ludashi-Plus/GameNative 做 **Vulkan 隐式 layer + AHB + SurfaceControl**（不依赖
   wineandroid.drv，且与 Wine 版本耦合小）。
 - **A+D**：master 的 wineandroid 作为"实验性后端"并行推进，但不作为唯一路径。
+
+### 16.19 迁移方案（子代理核实版）+ 决定性事实：C 方案没有 Vulkan 路径
+
+#### A. 决定性事实（直接改变路线选择）
+- **C 方案（wineandroid.drv）不能跑 Vulkan/DXVK**：`dlls/wineandroid.drv/init.c` 的 `android_drv_funcs`
+  **未设置 `.pVulkanInit`**（11.11 与 master 逐字段核对过），且 `dlls/winevulkan/loader.c` 是
+  **Win32 surface 专用**（只有 `VK_KHR_win32_surface`；Android 需要 `VK_KHR_android_surface`）。
+  ⇒ D3D11/D3D12/DXVK 在 C 方案上无路径（与 GPU 品牌无关）。
+- **B' 方案（native aarch64 wine + winex11.drv + 内嵌 X）能跑 Vulkan**：走 `VK_KHR_xlib_surface` ✓
+  ⇒ DXVK 可用。GPU 差异：**Adreno = 有开源 Mesa Turnip（最有利）**；**Mali（我们的 PGZ110/G610）= 用厂商
+  Vulkan + 必须 `bcn_layer` + BGRA AHB import 限制的已知修法**。
+- 结论：**骁龙/Adreno 越多，越应走 B'/D 路线**；C 方案无法承载"跑现代 Windows 游戏"的项目目标。
+
+#### B. 若要跟上游 C 方案，正解是 **wine-11.11**（不是 master）
+- **wine-11.11（2026-06-12）= 第一个含完整"分离进程模型"的发布版**（MR !10569 四个 commit 于 2026-05-26
+  合入 master，最后一个 `862dea14` "Split Android driver and Wine into separate processes"）。
+  11.10 及以前仍是 in-process；**master 不可用**：`user_driver_funcs` 在 2026-06-16 起又加了
+  `pCreateClientSurface`，2026-09-14 又给三个 funcs 加 `size` 字段 ⇒ 驱动签名与 11.11 不兼容。
+- 新模型分工：**App(JVM) = 显示服务器侧**（`System.load` ntdll.so/win32u.so/wineandroid.so →
+  UI 线程调 `wine_init()` → `device.c: wine_init_jni()` 在 `ALooper_forThread()` 上建**抽象 Unix socket
+  `\0\Device\WineAndroid`（AF_UNIX SOCK_SEQPACKET）**）；**Java 用 `ProcessBuilder` 起独立 wine 进程**
+  （`{loader, "explorer.exe", "/desktop=shell,,android", cmdline}`）。
+- 传输：所有窗口/缓冲 ioctl 走该 socket；**event pipe fd 与 AHB fd 用 SCM_RIGHTS 传**；
+  尺寸流 = Java `TopView.onSizeChanged` → `wine_desktop_changed` → event pipe → wine 进程
+  `process_events` 更新 `screen_width/height` + `init_monitors()`。⇒ **旧模型的"0 尺寸/黑屏"应自动消失**。
+- 我们的 9 组补丁里 **8 组可删**（都是迁就 in-process/旧接口的），只需考虑保留 `win32u/driver.c` 的
+  驱动兜底（且要按 11.11 上下文重写）。
+- 仍需注意：`WineActivity` 类必须留在 **`org.winehq.wine.WineActivity`**（`init.c` 的 `JNI_OnLoad` 用
+  `FindClass("org/winehq/wine/WineActivity")` 硬编码）；minSdk/targetSdk 都必须 **28**；
+  CI 需要**真正的 aarch64 PE 交叉编译器（llvm-mingw，NDK clang 不够）**、`ANDROID_HOME`、gradle stub 仍可用；
+  安装树必须**额外打包 6 个第三方 .so**（freetype/gmp/gnutls/lber/ldap/cups）否则 wine 进程 dlopen 失败。
+- 已知未修问题：**桌面分辨率会被 explorer 兜成 800x600**（未合并 MR !10712；规避：命令行改用
+  `/desktop=shell,-1x-1,android`）。
+
+#### C. 当前状态
+- CI 已触发 `master` 全量构建（run 37129679666，进行中）——按上述结论，**应改跑 `wine-11.11`**；
+- 我们手工补的 wine-11.0 路径（设备上已验证到"驱动活着、Java 桌面视图已建、尺寸通道通"）可作为
+  B' 方案的对照基线保留。
