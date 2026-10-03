@@ -111,6 +111,31 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
 
+      # C2 真机迭代用：整包 351MB 下载太慢，这里单独给一份"只含 unix 库 + android 驱动"的小增量（~10MB），
+      # 改动 wine 源码后只要把它解到设备上覆盖对应文件即可验证，不必重推 174MB 载荷。
+      - name: 打包增量产物（unix 库 + wineandroid.drv）
+        if: always()
+        shell: bash
+        run: |
+          LIB=wine-out/wine-android-arm64/arm64-v8a/lib/wine
+          if [ -d "$LIB" ]; then
+            mkdir -p wine-out/delta
+            tar czf wine-out/delta/wine-delta.tar.gz -C "$LIB" aarch64-unix aarch64-windows/wineandroid.drv 2>/dev/null \
+              || tar czf wine-out/delta/wine-delta.tar.gz -C "$LIB" aarch64-unix 2>/dev/null || true
+            ls -lh wine-out/delta || true
+          else
+            echo "(没有 $LIB，跳过增量打包)"
+          fi
+
+      - name: 上传增量产物
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: wine-android-delta
+          path: wine-out/delta/**
+          if-no-files-found: warn
+          retention-days: 14
+
       - name: 构建摘要
         if: always()
         run: |
