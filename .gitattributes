@@ -11,3 +11,6 @@
 *.txt text eol=lf
 *.json text eol=lf
 *.pro text eol=lf
+# git apply 的补丁必须保持 LF，否则 CI 上 apply 会因 CRLF 上下文不匹配而失败
+*.patch text eol=lf
+*.diff text eol=lf

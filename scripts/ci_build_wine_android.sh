@@ -36,6 +36,22 @@ else
 fi
 cd "$SRC" && git log --oneline -1
 
+log "1.5/5 给 wine 打本地补丁（wineandroid.drv 与 wine-11.0 内部接口漂移）"
+# wineandroid.drv 在上游多年无人编译，接口已与 wine-11.0 漂移（详见 scripts/patches/ 里的说明与记忆 §16.6）。
+# 幂等：先把它复位到 pristine（缓存恢复的源码树可能已经打过补丁），再逐个 apply。
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PATCH_DIR="$SCRIPT_DIR/patches"
+if ls "$PATCH_DIR"/*.patch >/dev/null 2>&1; then
+  git -C "$SRC" checkout -- dlls/ 2>/dev/null || true
+  for p in "$PATCH_DIR"/*.patch; do
+    echo "--- apply $(basename "$p")"
+    git -C "$SRC" apply --verbose "$p"
+  done
+  git -C "$SRC" diff --stat
+else
+  echo "(没有补丁，跳过)"
+fi
+
 log "2/5 构建 host 工具（x86_64 linux，跨编译需要 winebuild/widl/winegcc 以及 tools/wine/wine）"
 mkdir -p "$HOSTBUILD" && cd "$HOSTBUILD"
 # 注意：host 侧只需要 tools/，但 configure 仍会检查 X 等依赖 —— 必须显式 --without-x 等，
@@ -44,14 +60,18 @@ mkdir -p "$HOSTBUILD" && cd "$HOSTBUILD"
 #   clang ICE → make: *** [Makefile:224695: dlls/krnl386.exe16/i386-windows/selector.o] Error 1
 #   Win16 与 Android 跨编译无关，直接关掉（configure.ac 有该选项）。
 # --disable-tests：省掉回归测试，缩短 CI 时间。
+# --enable-archs=x86_64：host 侧不做 i386 PE（run #5 的 host make 又崩在 i386-windows：
+#   clang 18.1.3 ICE（SIGSEGV，exit 139）编 dlls/dinput/i386-windows/dinput.o，
+#   target i686-unknown-windows-msvc）。host 只需要 native 工具 + tools/wine/wine，不需要 32 位 PE，
+#   直接砍掉 i386 架构既绕开这个 clang bug，也让 host 构建快很多。
+# 缓存恢复回来的 build 目录可能来自旧版脚本：选项变了就必须重新 configure（下面用 .configure-opts 戳判断）。
 HOST_MINIMAL_OPTS=(
   --without-x --without-freetype --without-alsa --without-pulse --without-oss
   --without-coreaudio --without-cups --without-dbus --without-gnutls
   --without-sane --without-usb --without-v4l2 --without-pcsclite --without-netapi
   --without-krb5 --without-gstreamer --without-opencl
-  --disable-win16 --disable-tests
+  --disable-win16 --disable-tests --enable-archs=x86_64
 )
-# 缓存恢复回来的 build 目录可能来自旧版脚本：选项变了就必须重新 configure。
 HOST_OPTS_STR="${HOST_MINIMAL_OPTS[*]}"
 if [ ! -f config.status ] || [ "$(cat .configure-opts 2>/dev/null || true)" != "$HOST_OPTS_STR" ]; then
   # 注意：这里**不能**再接 `| tail -N`。tail 要等管道结束才吐字，会把整段构建的输出全部憋住，

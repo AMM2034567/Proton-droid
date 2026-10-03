@@ -63,15 +63,13 @@ jobs:
           $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --install "ndk;27.2.12479018" "platform-tools"
           ls -d $ANDROID_HOME/ndk/*
 
-      - name: 缓存 wine 源码与两端构建目录（加速迭代）
-        uses: actions/cache@v4
+      - name: 恢复缓存（wine 源码与两端构建目录，供增量编译）
+        uses: actions/cache/restore@v4
         with:
           path: |
             wine-work/wine
             wine-work/build-host
             wine-work/build-android
-          # key 精确命中 = 同脚本同 ref；否则靠 restore-keys 命中同 ref 的旧缓存，
-          # 让 configure 之前的产物复用，make 变成增量（脚本里用 .configure-opts 保证选项变了会重新 configure）。
           key: wine-cache-${{ github.event.inputs.wine_ref || 'wine-11.0' }}-${{ hashFiles('scripts/ci_build_wine_android.sh') }}
           restore-keys: |
             wine-cache-${{ github.event.inputs.wine_ref || 'wine-11.0' }}-
@@ -86,6 +84,18 @@ jobs:
           sed -i 's/\r$//' scripts/ci_build_wine_android.sh
           chmod +x scripts/ci_build_wine_android.sh
           ./scripts/ci_build_wine_android.sh
+
+      - name: 保存缓存（失败也存，下一轮才能增量）
+        # actions/cache 的 post 步骤在任务失败时会跳过（run #5 实测 skipped）⇒ 显式 save + if: always()。
+        # key 带 run_id 保证唯一；恢复侧靠 restore-keys 前缀命中，所以每次都拿最新一份。
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            wine-work/wine
+            wine-work/build-host
+            wine-work/build-android
+          key: wine-cache-${{ github.event.inputs.wine_ref || 'wine-11.0' }}-${{ hashFiles('scripts/ci_build_wine_android.sh') }}-run${{ github.run_id }}
 
       - name: 上传构建日志与产物
         if: always()
