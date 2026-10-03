@@ -1,7 +1,8 @@
 # Proton-droid 项目记忆（Project Memory）
 
-> 最后更新：2026-10-03 会话收尾
-> 状态：**「游戏无法启动」已修复并在真机逐层验证**；显示层方案已定 **B（内嵌 Xlorie）**，后续演进到 **C（wineandroid.drv）**。
+> 最后更新：2026-10-04（B 方案第一步落地，待真机验证）
+> 状态：**「游戏无法启动」已修复并在真机逐层验证**；显示层 **B 方案（内嵌 libXlorie）代码已落地且构建通过**，
+> 真机验证因 adb 设备掉线未完成（见 §8.2 进度 / §11 P0-5）；终态演进到 **C（wineandroid.drv）**。
 > 正式版方向：**App 内置下载 rootfs 与编译好的 Proton 产物**（产物走自己打包 → GitHub Release），见第 12 节。
 > 本文件是下次开工的第一入口；改动运行链路的代码前请先读第 2 节「铁律」。
 >
@@ -152,8 +153,16 @@ $adb='D:\XSBDownload\SDK\platform-tools\adb.exe'
 #    会话运行中触发 MainActivity.onCreate（新任务）→ 日志：
 #    cleanupStaleProcesses: active session pid=… alive, skip sweep    且进程树存活
 
-# g) X11 是否可达（非 Termux-X11 环境下为 false，属预期）
-& $adb logcat -d -v brief | Select-String "No X11 server reachable"
+# g) 内嵌 X 服务器（B 方案）是否起来 —— 应看到 X 服务器启动 + 连接成功，而不是 "No X11 server reachable"
+& $adb logcat -d -v brief | Select-String "XServer|LorieView|No X11 server reachable|xwininfo"
+#    期望：XServer: X server started on :0 (app-side fd=…)  → LorieView: connected to X server (fd=…)
+#          → X screen size -> 1288x720 之类（宽度按 8 对齐）
+#    若仍出现 "No X11 server reachable" 说明 libXlorie 没加载成功或服务器没监听
+
+# h) 从 guest 内部验证 X 可达（最硬的一条）
+#    起好 App 进入游戏视窗后：
+& $adb shell "run-as com.protondroid sh -c 'cd files && env PROOT_LOADER=\$PWD/bin/loader PROOT_TMP_DIR=\$PWD/tmp LD_LIBRARY_PATH=\$PWD/bin ./bin/proot -r \$PWD/rootfs/debian/rootfs -0 -b /sdcard:/sdcard /usr/bin/env DISPLAY=:0 PATH=/usr/bin:/bin xwininfo -root -tree'"
+#    期望：打印出 root 窗口树（尺寸 = sendWindowChange 下发的 X 屏幕尺寸）
 ```
 
 ---
@@ -195,19 +204,42 @@ NEEDED: libGLESv2.so libandroid.so libmediandk.so liblog.so libm.so libz.so libE
 native 侧写死的 Java 契约类: com/termux/x11/LorieView、com/termux/x11/CmdEntryPoint、com/termux/x11/MainActivity
 ```
 
-因此 B 的实现路径：
+因此 B 的实现路径（进度：✅ 已完成 / 🔄 待真机验证 / ⬜ 未开始）：
 
-1. 从 `termux/termux-x11` 上游移植 Java 胶水（`LorieView` + `CmdEntryPoint` 等，保持 FQCN 与 native 方法签名一致），
-   去掉所有 Termux 文件系统/前缀假设。
-2. 把 `libXlorie.so` 放进 `jniLibs/arm64-v8a/`（`System.loadLibrary`），由 App 提供 Surface + 输入注入 + 生命周期。
-3. X 服务器与 proot guest 通过 `DISPLAY=:0` 的**抽象 socket** `@/tmp/.X11-unix/X0` 通信
+1. ✅ 从 `termux/termux-x11` 上游移植 Java 胶水（保持 FQCN 与 native 方法签名一致），
+   去掉所有 Termux 文件系统/前缀假设 —— 已产出最小版
+   `app/src/main/java/com/termux/x11/{CmdEntryPoint,LorieView,MainActivity}.java`。
+2. ✅ `libXlorie.so` 已放进 `jniLibs/arm64-v8a/`（预编译二进制，SHA256 `C5AE6A56…`，
+   来源 `com.termux.x11` 1.03.01-0e1ebb4-01.10.26）；已实现 `com.protondroid.display.XServer`
+   负责同进程启动 + 等待 `:0` 可连接 + 暴露控制通道 fd。
+3. 🔄 X 服务器与 proot guest 通过 `DISPLAY=:0` 的**抽象 socket** `@/tmp/.X11-unix/X0` 通信
    （同一 network namespace，不需要 bind 文件系统路径）。
-4. 先于 `launchGame` 启动 X 服务器；`checkX11Display` 通过后即可去掉「Termux-X11 提示」。
-5. 验证顺序：guest 内 `xwininfo -root -tree` 能连上 → `wine explorer /desktop=...` 能建窗口 →
-   画面出现在 SurfaceView。
+4. ✅ `GameViewActivity` 先起 X 服务器再拉起 Proton；`ProtonProcessManager` 里
+   `checkX11Display` 从「警告」升级为**硬前置**。
+5. 🔄 验证顺序：`XServer.ensureStarted()` 成功 → `libXlorie` 加载无异常 →
+   guest 内 `xwininfo -root -tree` 能连上 → `wine explorer /desktop=ProtonDroid,1280x720 <game.exe>`
+   能建窗口 → 画面出现在 `LorieView`。
 
-风险/待办：GPLv3（Xorg 派生）合规；Java 胶水移植量；**D3D11/DXVK 还需要 Vulkan WSI 桥**
-（把 Win32 Vulkan swapchain 接到 ANativeWindow，或提供 X11 present 桥）。
+**libXlorie 的 JNI 契约（必须完全对齐；来自 `activity.cpp` / `cmdentrypoint.cpp` 的 RegisterNatives）**
+
+| 类 | native 方法（名字 + 签名不可改） | native 会调用的 Java 成员 |
+| --- | --- | --- |
+| `com.termux.x11.CmdEntryPoint` | `start([Ljava/lang/String;)Z`、`getXConnection()Landroid/os/ParcelFileDescriptor;`、`getLogcatOutput()`、`reportFatalError(Ljava/lang/String;)V`、**`@CriticalNative static connected()Z`** | `sendBroadcast()V`、`sendBroadcastDelayed()V` |
+| `com.termux.x11.LorieView` | `nativeInit()J`、`nativeDestroy(J)V`、`surfaceChanged(JLandroid/view/Surface;)V`、`setViewport(JIIIIIII)V`、`sendWindowChange(JIIILjava/lang/String;)V`、`sendMouseEvent(JFFIZZ)V`、`sendTouchEvent(JIIII)V`、`sendKeyEvent(JIIZ)Z`、`connect(JI)V`(static)、**`@CriticalNative static connected(J)Z`**、`sendClipboardEvent(J[B)V`、`sendTextEvent(J[B)V`、`requestConnection(J)Z` 等 | 字段 `activity:Lcom/termux/x11/MainActivity;`；方法 `setRendererViewport(IIIIFFFF)V`、`setClipboardText(Ljava/lang/String;)V`、`requestClipboard()V`、`onSyncReply(I)V`、`resetIme()V` |
+| `com.termux.x11.MainActivity` | —— | `clientConnectedStateChanged()V`（`nativeInit` 里 `FindClass`，**类不存在会致命退出**） |
+
+踩坑记录：
+- `@CriticalNative` 方法**没有 JNIEnv/jclass 参数**，漏标 → ABI 错位崩溃；
+  但 `dalvik.annotation.optimization.CriticalNative` 在 `android.jar` 里可直接引用，
+  **不要自建 stub**（自建会报"程序包已存在于另一模块: java.base"）。
+- 布局 XML 引用 `LorieView` 需要 `(Context, AttributeSet)` 构造，否则膨胀时崩溃。
+- `SurfaceHolder.addCallback` 在 `SurfaceView` 上是单一回调实现，别在 Activity 里再注册一个；
+  用自定义 `setSurfaceReadyListener(Runnable)`。
+- X 屏幕尺寸经 `sendWindowChange` 下发，宽度按 libxcvt 的 **8 像素粒度向下对齐**
+  （1366x768 是特例，上游对 1360x768 特判成 1366）。
+
+风险/待办：**GPL-3.0 合规**（Xorg 派生 + 预编译二进制，见 `docs/THIRD_PARTY_NOTICES.md`）；
+**D3D11/DXVK 还需要 Vulkan WSI 桥**（把 Win32 Vulkan swapchain 接到 ANativeWindow，或提供 X11 present 桥）。
 
 ### 8.3 C 方案（终态，B 之后再上）
 
@@ -245,6 +277,16 @@ Xvfb 是纯软件 X 服务器（GLX 走 swrast，OpenGL 全 CPU），且软 X �
 | `libtalloc.so.2` | `.../libtalloc/libtalloc_2.5.0_aarch64.deb` | `742B438C4D09` |
 | `libandroid-shmem.so` | `.../libandroid-shmem/libandroid-shmem_0.7_aarch64.deb` | `84475798E07C` |
 
+内置显示组件（B 方案）：
+
+| 文件 | 来源 | SHA-256（前 12） |
+| --- | --- | --- |
+| `libXlorie.so`（3,550,768 B） | 设备上 `com.termux.x11` APK（`1.03.01-0e1ebb4-01.10.26`, versionCode 15）的 `lib/arm64-v8a/`，源码 [termux/termux-x11](https://github.com/termux/termux-x11) | `C5AE6A56CA6D` |
+
+> 上游源码参考已拉到 `cache/refs/termux-x11/`（gitignore，不入库）；关键文件：
+> `lorie/src/main/java/com/termux/x11/{CmdEntryPoint,LorieView,MainActivity}.java`、
+> `lorie/src/main/cpp/lorie/{activity.cpp,cmdentrypoint.cpp}`。
+
 推送命令（需代理；token 不落盘）：
 
 ```powershell
@@ -258,14 +300,19 @@ git -c credential.helper= -c http.proxy=http://127.0.0.1:10809 `
 
 ## 10. 已知坑 / 未解问题
 
-1. **画面仍缺 X 服务器**（第 8 节，B 方案待做）。
+1. **画面**：B 方案（内嵌 `libXlorie`）代码已落地并**构建通过**，但真机验证因 adb 设备掉线未完成
+   （第 8.2 节进度表；下次接上设备先跑第 6 节 g/h 两步）。
 2. **DXVK 的 Vulkan WSI**：Android 只有 `VK_KHR_android_surface`；走 X11 时需自建 WSI 桥（B 之后）。
-3. **ColorOS 限制**：`adb shell pm grant` / `appops set` 均被拒；只能应用内弹窗授权。
+3. **GPL 合规未落地**：`libXlorie.so` 为 GPLv3 预编译二进制，仓库尚无 LICENSE 全文与源码说明，
+   见 `docs/THIRD_PARTY_NOTICES.md`。
+4. **ColorOS 限制**：`adb shell pm grant` / `appops set` 均被拒；只能应用内弹窗授权。
    `am kill` 对有前台服务的 App 无效；`am crash` 会连子进程一起带走（cgroup/进程组回收）。
-4. **run-as 的域是 `runas_app`**，App 是 `untrusted_app_27`，跨域读 `/proc/<pid>/status|exe` 会被拒 ——
+5. **run-as 的域是 `runas_app`**，App 是 `untrusted_app_27`，跨域读 `/proc/<pid>/status|exe` 会被拒 ——
    用 run-as 造「残留进程」来测清理会得到假阴性。
-5. **PulseAudio 音频**：`PULSE_SERVER=127.0.0.1` 只是占位，App 内没有音频服务（未验证）。
-6. `docs/ARCHITECTURE.md` 早期写的「ANativeWindow 直通渲染」不准确，已在文档中改成「显示依赖 X 服务器」。
+6. **PulseAudio 音频**：`PULSE_SERVER=127.0.0.1` 只是占位，App 内没有音频服务（未验证）。
+7. `docs/ARCHITECTURE.md` 早期写的「ANativeWindow 直通渲染」不准确，已在文档中改成「显示依赖 X 服务器」。
+8. **构建期**：本仓库构建需 `danger-full-access`（否则 CMake 卡在 *Detecting C compiler ABI info*）；
+   本地构建前先 `.\gradlew.bat --stop` + 清 `app/build`、`app/.cxx`，否则偶发"无法删除目录"。
 
 ---
 
@@ -273,12 +320,15 @@ git -c credential.helper= -c http.proxy=http://127.0.0.1:10809 `
 
 **P0 — B 方案（显示层，当前唯一硬缺口）**
 
-1. 拉取 `termux/termux-x11` 源码，梳理 `LorieView` / `CmdEntryPoint` 与 native 的 JNI 契约（方法签名、回调、启动参数、环境变量）。
-2. 把 `libXlorie.so` 以 `jniLibs` 形式引入（`System.loadLibrary`），确认在 `untrusted_app_27` 域下能 `dlopen` + 建 Surface。
-3. 实现最小 Java 胶水：Surface 提供、输入注入（touch→X 事件）、生命周期；剪贴板先不做。
-4. `ProtonProcessManager.launchGame` 前启动 X 服务器；`checkX11Display` 从「提示」升级为「硬前置条件」。
-5. 验证链：guest `xwininfo -root -tree` → `wine explorer /desktop=ProtonDroid,1280x720 <game.exe>` → SurfaceView 出现画面。
-6. 记录性能基线（osu!/goose 帧率、CPU/GPU 占用），作为 C 方案的对比依据。
+1. ✅ 拉取 `termux/termux-x11` 源码，梳理 JNI 契约（结论见 §8.2 表格）——源码在 `cache/refs/termux-x11/`。
+2. ✅ `libXlorie.so` 以 `jniLibs` 引入 + `System.loadLibrary`；`XServer.ensureStarted()` 负责同进程启动。
+3. ✅ 最小 Java 胶水：`CmdEntryPoint` / `LorieView`（Surface + 触摸/滚轮/键盘输入）/ `MainActivity` 桩。
+4. ✅ `GameViewActivity` 先起 X 服务器再拉起 Proton；`checkX11Display` 已是硬前置。
+5. 🔄 **接上设备后立即做**：跑 §6 g/h —— 确认 `XServer started` → `LorieView connected` →
+   guest 内 `xwininfo -root -tree` 出窗口树 → `wine explorer /desktop=…` 能建窗口 →
+   `LorieView` 出画面（截图确认）。
+6. ⬜ 记录性能基线（osu!/goose 帧率、CPU/GPU 占用），作为 C 方案的对比依据。
+7. ⬜ GPL 合规三件套（LICENSE + `licenses/` + App 内开源许可页），见 `docs/THIRD_PARTY_NOTICES.md`。
 
 **P1 — 正式版运行时下载与发布链路**（见第 12 节）
 

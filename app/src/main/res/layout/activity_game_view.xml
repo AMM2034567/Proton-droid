@@ -4,8 +4,8 @@
     android:layout_height="match_parent"
     android:background="@color/black">
 
-    <!-- 全屏渲染画布 SurfaceView (直通 NDK ANativeWindow) -->
-    <SurfaceView
+    <!-- 内嵌 X 服务器（libXlorie）渲染视图：X 画面由 EGL 直接合成到本 Surface -->
+    <com.termux.x11.LorieView
         android:id="@+id/surface_game_view"
         android:layout_width="match_parent"
         android:layout_height="match_parent" />

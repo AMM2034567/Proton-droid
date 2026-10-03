@@ -87,8 +87,10 @@ class ProtonProcessManager(private val context: Context) {
         }
         val guestWorkDir = guestGamePath.substringBeforeLast('/', "/root").ifEmpty { "/root" }
 
+        // X 服务器现在是内嵌硬前置：GameViewActivity 会先拉起 libXlorie 再启动游戏
         if (!NativeBridge.checkX11Display(0)) {
-            report("警告: 未检测到 X11 显示 :0 —— 请先在 Termux 中执行 `termux-x11 :0`（Wine 需要它来创建窗口）")
+            report("错误: X 服务器 (DISPLAY=:0) 未就绪，无法创建游戏窗口")
+            return false
         }
         val swept = sweepStaleProcesses()
         if (swept > 0) report("已清理上次遗留的运行时进程 $swept 个")
