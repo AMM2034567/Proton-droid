@@ -87,8 +87,15 @@ HOST_MINIMAL_OPTS=(
   --without-krb5 --without-gstreamer --without-opencl
   --disable-win16 --disable-tests --enable-archs=x86_64
 )
-HOST_OPTS_STR="${HOST_MINIMAL_OPTS[*]}"
+# 指纹必须包含"PE 编译器是谁"：缓存恢复回来的 config.status 可能是没装 mingw 时生成的，
+# 只比选项字符串会漏掉工具链变化（那样会沿用 clang 的配置继续编 → 再次 ICE）。指纹变了就整个重建。
+HOST_PE_CC="$(command -v x86_64-w64-mingw32-gcc || echo clang)"
+HOST_OPTS_STR="${HOST_MINIMAL_OPTS[*]} | pe=$HOST_PE_CC"
 if [ ! -f config.status ] || [ "$(cat .configure-opts 2>/dev/null || true)" != "$HOST_OPTS_STR" ]; then
+  if [ -f config.status ]; then
+    echo "host 配置或 PE 工具链变化 ⇒ 清空 $HOSTBUILD 重新 configure"
+    cd "$WORK"; rm -rf "$HOSTBUILD"; mkdir -p "$HOSTBUILD"; cd "$HOSTBUILD"
+  fi
   # 注意：这里**不能**再接 `| tail -N`。tail 要等管道结束才吐字，会把整段构建的输出全部憋住，
   # 网页/CLI 看到的就只有"卡住不动"（run #4 就是这样：60 多行的日志停在 configure 结束处）。
   # tee 已经落盘到 $OUT/*.log，控制台全量输出反而更好。
@@ -136,8 +143,13 @@ TGT_OPTS=(
   --without-netapi --without-krb5 --without-gstreamer --without-opencl
   --disable-win16 --disable-tests
 )
-TGT_OPTS_STR="${TGT_OPTS[*]}"
+TGT_PE_CC="$(command -v aarch64-w64-mingw32-clang || command -v aarch64-w64-mingw32-gcc || echo clang)"
+TGT_OPTS_STR="${TGT_OPTS[*]} | pe=$TGT_PE_CC | ndk=$(basename "$TOOLCHAIN")"
 if [ ! -f config.status ] || [ "$(cat .configure-opts 2>/dev/null || true)" != "$TGT_OPTS_STR" ]; then
+  if [ -f config.status ]; then
+    echo "目标配置或工具链变化 ⇒ 清空 $TGTBUILD 重新 configure"
+    cd "$WORK"; rm -rf "$TGTBUILD"; mkdir -p "$TGTBUILD"; cd "$TGTBUILD"
+  fi
   stdbuf -oL -eL "$SRC/configure" "${TGT_OPTS[@]}" 2>&1 | stdbuf -oL -eL tee "$OUT/configure-android.log"
   echo "$TGT_OPTS_STR" > .configure-opts
 fi
