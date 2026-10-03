@@ -174,7 +174,10 @@ if [ "${WINE_APK_MODE:-stub}" = "stub" ]; then
 #!/bin/sh
 # stub gradle：只满足 wine 的 wine-debug.apk 规则，不做真正的 Android 构建
 echo "[stub gradle] skip real APK build (wine-11.0 的 APK 规则用 AGP 2.2.1/jcenter，不可用且不含 payload): $*"
+# 注意路径：Makefile 的 mv 取的是 build/outputs/apk/wine-debug.apk（没有 debug/ 子目录，
+# run #11 就是因为我建成了 debug/ 子目录才 mv 失败）
 mkdir -p build/outputs/apk/debug
+: > build/outputs/apk/wine-debug.apk
 : > build/outputs/apk/debug/wine-debug.apk
 exit 0
 STUB

@@ -1116,6 +1116,9 @@ E6 去掉虚拟桌面包装，直接 `wine dxvk_probe.exe`。
 | #10 | 33m58s | ❌ **链接** `wineandroid.so` 时 `undefined symbol: drawable_mutex`（**驱动所有 .o 都编过了**） | `drawable_mutex` 是旧 wine 由 win32u 导出的全局锁，11.0 里已删；而驱动里**只声明（`android.h:56`）+ 初始化（`init.c:540`）、从不上锁** ⇒ 补丁 v3 删掉这两行。**另一个大发现：host 阶段白花 15 分钟**——`git checkout -- dlls/` 在缓存恢复后（工作区 stat 与 git index 失配）把 `dlls/` 全部源文件按新 mtime 重写 ⇒ make **重编 3159 个文件**（日志实测）。已改成只重置 `dlls/wineandroid.drv/` ⇒ 下一轮 host 应变成秒级。信号：缓存确实生效（`Cache restored from key: …run3711059…`，`PE 编译器: x86_64-w64-mingw32-gcc (GCC) 13-win32`、`已存在，复用` 都出现在日志里） |
 | #11 | 运行中 | 补丁 v3（4 文件漂移）+ 只重置驱动目录 | 预期：host 增量（分钟级）→ 目标编译补完 → 链接 → `make install` → 安装树 |
 
+| #11 | 3m9s | ⚠️ **C1 产物首次产出**（install tar **175MB** + build tar 183MB）但顶层判失败 | ① `host make 退出码: 0` 只花 **3 秒**（checkout 修复生效：上一轮同一步是 15 分钟 / 3159 个文件）；② 目标 `make` 13 秒后挂在 gradle/APK 规则，**但 `make install 退出码: 0`** ⇒ 安装树已产出（`wine-android-arm64-install.tar.gz`）；③ APK 规则失败真因：Makefile 的 `mv` 取 `build/outputs/apk/wine-debug.apk`（**没有 `debug/` 子目录**），我的 stub 建到了 `debug/` 下 ⇒ 已修 stub 路径；④ artifact 名 `wine-android-build`（351MB）已可下载核验 |
+| #12 | 运行中 | stub 路径修复 | 目标：`make` 也 rc=0 ⇒ 整轮全绿，C1 正式收口 |
+
 **CI 用法**：`gh workflow run "wine-android.yml" -f wine_ref=wine-11.0 -f api_level=28 --ref main`；
 日志 `gh run view <id> --log > cache\ci-wine-N.log`；产物 artifact = `wine-android-build`
 （现已含 `wine-out/*.log` 全部四个日志 + `artifacts/**`）。
