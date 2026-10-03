@@ -186,55 +186,63 @@ class ProtonProcessManager(private val context: Context) {
             "-all"
         }
 
-        return arrayOf(
+        val env = linkedMapOf(
             // --- PRoot 运行期 ---
-            "PROOT_LOADER=${layout.prootLoader.absolutePath}",
-            "PROOT_LOADER_32=${layout.prootLoader32.absolutePath}",
-            "PROOT_TMP_DIR=${layout.tmpDir.absolutePath}",
-            "PROOT_NO_SECCOMP=1",
-            "LD_LIBRARY_PATH=$ldLibraryPath",
+            "PROOT_LOADER" to layout.prootLoader.absolutePath,
+            "PROOT_LOADER_32" to layout.prootLoader32.absolutePath,
+            "PROOT_TMP_DIR" to layout.tmpDir.absolutePath,
+            "PROOT_NO_SECCOMP" to "1",
+            "LD_LIBRARY_PATH" to ldLibraryPath,
             // --- guest 基础环境 ---
-            "HOME=/root",
-            "TMPDIR=/tmp",
-            "XDG_RUNTIME_DIR=/tmp",
-            "PATH=$proton/files/bin-arm64:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+            "HOME" to "/root",
+            "TMPDIR" to "/tmp",
+            "XDG_RUNTIME_DIR" to "/tmp",
+            "PATH" to "$proton/files/bin-arm64:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
             // --- Wine / Proton ---
-            "WINEPREFIX=${ProtonLayout.PREFIX_GUEST_PATH}",
-            "WINESERVER=${ProtonLayout.WINESERVER_GUEST_PATH}",
-            "WINELOADER=${ProtonLayout.WINE_GUEST_PATH}",
-            "WINEDLLPATH=$proton/files/lib/vkd3d:$proton/files/lib/wine",
-            "ESPEAK_DATA_PATH=$proton/files/share",
-            "FEX_APP_CONFIG_LOCATION=$proton/files/share/fex-emu",
-            "FEX_TSOENABLED=1",
-            "FEX_MULTIBLOCK=1",
-            "FEX_MAXINST=500",
-            "WINEDEBUG=$wineDebug",
-            "WINE_LARGE_ADDRESS_AWARE=1",
-            "WINEDLLOVERRIDES=d3d11=n,b;dxgi=n,b;d3d9=n,b;d3d10core=n,b;d3d12=n,b",
-            "DXVK_ENABLE_NVAPI=0",
-            "DXVK_LOG_LEVEL=none",
-            "VKD3D_DEBUG=none",
+            "WINEPREFIX" to ProtonLayout.PREFIX_GUEST_PATH,
+            "WINESERVER" to ProtonLayout.WINESERVER_GUEST_PATH,
+            "WINELOADER" to ProtonLayout.WINE_GUEST_PATH,
+            "WINEDLLPATH" to "$proton/files/lib/vkd3d:$proton/files/lib/wine",
+            "ESPEAK_DATA_PATH" to "$proton/files/share",
+            "FEX_APP_CONFIG_LOCATION" to "$proton/files/share/fex-emu",
+            "FEX_TSOENABLED" to "1",
+            "FEX_MULTIBLOCK" to "1",
+            "FEX_MAXINST" to "500",
+            "WINEDEBUG" to wineDebug,
+            "WINE_LARGE_ADDRESS_AWARE" to "1",
+            "WINEDLLOVERRIDES" to "d3d11=n,b;dxgi=n,b;d3d9=n,b;d3d10core=n,b;d3d12=n,b",
+            "DXVK_ENABLE_NVAPI" to "0",
+            "DXVK_LOG_LEVEL" to "none",
+            "VKD3D_DEBUG" to "none",
             // --- 显示与音频（内嵌 X 服务器 / PulseAudio）---
-            "DISPLAY=:0",
-            "PULSE_SERVER=127.0.0.1"
-        ) + readExtraEnv()
+            "DISPLAY" to ":0",
+            "PULSE_SERVER" to "127.0.0.1"
+        )
+
+        // 免重编调试钩子：files/extra_env.txt 里的同名键**覆盖**上面的默认值
+        readExtraEnv().forEach { line ->
+            val i = line.indexOf('=')
+            if (i > 0) env[line.substring(0, i).trim()] = line.substring(i + 1).trim()
+        }
+
+        return env.map { (k, v) -> "$k=$v" }.toTypedArray()
     }
 
     /**
-     * 调试用：读取 files/extra_env.txt（每行 `KEY=VALUE`，`#` 注释）并追加进 guest 环境。
-     * 用于免重编调整 MONO_LOG_*、FEX_*、WINEDLLOVERRIDES 等排查开关。
+     * 调试用：读取 files/extra_env.txt（每行 `KEY=VALUE`，`#` 注释）。
+     * 用于免重编调整 VK_ICD_FILENAMES / DXVK_LOG_LEVEL / MONO_LOG_* / FEX_* 等排查开关；
+     * 同名键会覆盖 [buildGuestEnv] 里的默认值（早先「追加」的写法会因重名而失效）。
      */
-    private fun readExtraEnv(): Array<String> {
+    private fun readExtraEnv(): List<String> {
         return try {
             val f = File(context.filesDir, "extra_env.txt")
-            if (!f.isFile) return emptyArray()
+            if (!f.isFile) return emptyList()
             f.readLines()
                 .map { it.trim() }
                 .filter { it.isNotEmpty() && !it.startsWith("#") && it.contains('=') }
-                .toTypedArray()
         } catch (e: Exception) {
             Log.w(tag, "readExtraEnv failed: ${e.message}")
-            emptyArray()
+            emptyList()
         }
     }
 

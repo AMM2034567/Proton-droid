@@ -673,11 +673,44 @@ Xlorie 的 DRI3 是**单向残缺**的 ——
    所以只要走 GPU，就基本一定要用 layer 自带的 presenter；
 4. 验收：`vulkaninfo` 列出 Mali 设备 + `VK_KHR_xcb_surface`；DXVK 游戏出画面并记录帧率（回填 §11 P0-7）。
 
-**W0.5 —— DXVK 冒烟测试（W0 与 W1 之间的插入项，待做）**
-W0 只证明了「Vulkan 能出画」，还没证明 **DXVK**（D3D11→Vulkan）能起来。
-需要一个 D3D11 测试程序：osu!stable 是 **OpenGL(OpenTK)** 不吃 DXVK，GooseDesktop 是 GDI/WinForms 也不吃；
-计划用 mingw-w64（PC 侧交叉编译）编一个最小 D3D11 程序（创建设备 → swapchain → Clear+Present N 帧 → 打印 adapter），
-放进 `/sdcard` 当**常驻回归资产**，在 App 域内用 `VK_ICD_FILENAMES=lvp` + `DXVK_LOG_LEVEL=info` 跑通。
+**W0.5 —— DXVK 冒烟测试（进行中，已发现两个真 bug）**
+
+W0 只证明了「Vulkan 能出画」，还没证明 **DXVK**（D3D11→Vulkan）。测试程序见
+`cache/dxvk_probe.c`（App 侧常驻回归资产，真机放在
+`/sdcard/Download/ProtonDroid/games/dxvkprobe/dxvk_probe.exe`）；osu!stable 是 **OpenGL(OpenTK)**、
+GooseDesktop 是 GDI/WinForms，都不经过 DXVK，所以必须自备。
+
+**bug 1（已修）：DXVK 从未被启用。**
+proton 发行包把 DXVK 放在 `files/lib/wine/dxvk/{aarch64,i386,x86_64}-windows/`，
+但模板 prefix 的 `drive_c/windows/system32|syswow64/{d3d8,d3d9,d3d10core,d3d11,dxgi}.dll`
+默认指向 **wine 内建**（`lib/wine/<arch>-windows/...`）。Proton 官方是在首次运行时由 `proton`
+脚本把这些覆盖点指向 DXVK；我们**直接拉起 `wine`、跳过了那一步**，于是
+`WINEDLLOVERRIDES=d3d11=n,b` 判定"找到的是内建 dll"→ DXVK 静默不加载（不会有任何 DXVK 日志）。
+修复：`WinePrefix.installDxvk()`（幂等，每次启动调用，prefix 已存在也会纠正；把覆盖点
+改成指向 `lib/wine/dxvk/<arch>-windows/<dll>` 的 guest 绝对路径符号链接）。
+
+**bug 2：本 Proton 只支持 32 位 x86 模拟（FEX WOW64）。**
+`lib/wine/aarch64-windows/` 里只有 `libwow64fex.dll`（+`wow64.dll`/`wow64win.dll`，`xtajit64.dll`
+是 stub），**没有 64 位 x86 模拟器** → x86_64 PE 起不来（探针首次用 x86_64 编，
+进程根本不出现，日志只有 `cannot find builtin library for xtajit64.dll`）。
+所以 D3D/游戏测试程序都必须编成 **32 位（i686）**。工具链：`cache/toolchain/w64devkit`（2.10.0，
+官方 `.7z.exe` 自解压；支持 `-m32`；编译时需把 `TEMP/TMP` 指到可写目录，否则
+`Cannot create temporary file in %TEMP%`）。32 位探针发布后进程正常起来，证明 FEX WOW64 可用。
+
+**当前测量结果（32 位探针，lavapipe，X 服务器 `-disable-dri3`）**：
+- ✅ DXVK 初始化成功：日志有 `Creating sampler descriptor heap`、`Graphics pipeline libraries supported`、
+  `Presenter: Actual swapchain properties: VK_FORMAT_B8G8R8A8_UNORM / VK_PRESENT_MODE_IMMEDIATE_KHR /
+  Buffer size 632x453 / Image count 4`（`fixme:vulkan:allocate_external_host_memory Using VK_EXT_external_memory_host`）
+- ✅ 3000 次 `IDXGISwapChain::Present` 全部返回成功（探针自己的 `dxvk_probe.log`：`present=3000`）
+- ✅ present 期间 **X 服务器帧率升到 24~27 FPS**（说明 damage 确实产生了）
+- ❌ **但可见窗口内容仍是纯黑**：像素级验证窗口区域 `distinct=1`、100% `(0,0,0)`；
+  同一区域在 vkcube 那张截图里有 3107 种颜色。连拍两帧差分只有鼠标光标（17x22 px）在变。
+- ⇒ 结论：DXVK 的 present **到达了服务器（有 damage）但没有改到可见窗口**。
+  下一步排查方向：`WINEDEBUG=+vulkan,+x11drv` 看 winevulkan 把 swapchain 的 xcb surface
+  挂到了哪个 X 窗口（怀疑不是可见的那个客户窗口，或走了 wine 的共享内存/DIB 路径）；
+  对照实验：X 服务器加 `-force-sysvshm`、`-legacy-drawing`、`-disable-gpu-present`；
+  以及 `dxvk.conf` 里 `dxvk.numCompilerThreads`/`dxvk.tearFree` 之类无关项要排除。
+  这条不通，W1 的 vulkan-wsi-layer 也救不了 DXVK —— 它和 W0 的 vkcube 是两个不同的 present 入口。
 
 **W2 —— 终态（C 方案，见 §8.3）**
 `wineandroid.drv` 让 winevulkan 直接拿 `ANativeWindow` → `vkCreateAndroidSurfaceKHR`，

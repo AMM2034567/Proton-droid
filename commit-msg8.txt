@@ -1,0 +1,24 @@
+fix(runtime): 首次把 DXVK 真正装进 prefix；extra_env 改为覆盖同名键
+
+两个真 bug（真机验证发现）：
+
+1. DXVK 从未生效：模板 prefix 的 system32/syswow64/{d3d8,d3d9,d3d10core,d3d11,dxgi}.dll
+   指向 wine 内建，而 Proton 官方是在首次运行时由 proton 脚本改指 lib/wine/dxvk/ 下的实现；
+   我们直接拉起 wine 跳过了这一步 -> WINEDLLOVERRIDES=d3d11=n,b 判定为内建而永不加载 DXVK
+   （且没有任何 DXVK 日志，极具迷惑性）。
+   -> 新增 WinePrefix.installDxvk()：幂等地把覆盖点改成指向
+      lib/wine/dxvk/<arch>-windows/<dll> 的 guest 绝对路径符号链接；prefix 已存在时也会纠正。
+
+2. 本 Proton 只带 32 位 x86 模拟（FEX WOW64：libwow64fex/wow64/wow64win，xtajit64 是 stub），
+   x86_64 PE 起不来 -> D3D 测试程序必须编 32 位。
+
+同时修正 extra_env 语义：改为「覆盖同名键」。原先的追加写法在重名时不生效，
+导致 DXVK_LOG_LEVEL / VK_ICD_FILENAMES 这类覆盖不了默认值。
+
+W0.5 冒烟测试（自编 32 位 D3D11 探针 cache/dxvk_probe.c，作为常驻回归资产）：
+- DXVK 初始化成功，swapchain 建立（B8G8R8A8_UNORM / IMMEDIATE / 632x453 / 4 images）
+- 3000 次 Present 全部成功；present 期间 X 服务器帧率 24~27 FPS（damage 有产生）
+- 但可见窗口仍是纯黑（像素级验证 distinct=1、100% (0,0,0)）
+  -> present 到不了可见窗口，已列为下一步排查项（+vulkan/+x11drv 追踪、-force-sysvshm 对照）
+
+Memory: 已更新 docs/PROJECT_MEMORY.md §14.4（W0.5 段）

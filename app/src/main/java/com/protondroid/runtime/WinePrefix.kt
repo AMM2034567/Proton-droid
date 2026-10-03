@@ -14,8 +14,24 @@ import java.nio.file.Paths
  */
 object WinePrefix {
 
+    /**
+     * Proton 发行包里 DXVK 的 dll 名（位于 `files/lib/wine/dxvk/<arch>-windows/`）。
+     * 注意：这些名称必须与 wine 在 prefix 里期望的覆盖点一致。
+     */
+    private val DXVK_DLLS = listOf("d3d8.dll", "d3d9.dll", "d3d10core.dll", "d3d11.dll", "dxgi.dll")
+
+    /** arch 目录 → prefix 内对应的 Windows 目录 */
+    private val DXVK_ARCH_MAP = listOf(
+        "aarch64-windows" to "system32",   // 64 位 / WOW64 游戏的系统 dll 解析路径
+        "i386-windows" to "syswow64"       // 32 位
+    )
+
     fun ensure(layout: ProtonLayout, guestRoot: File, onLog: (String) -> Unit): Boolean {
-        if (layout.isPrefixValid(guestRoot)) return true
+        if (layout.isPrefixValid(guestRoot)) {
+            // prefix 已存在也要确保 DXVK 覆盖点正确（历史 prefix 可能仍指向 wine 内建 dll）
+            installDxvk(layout, guestRoot, onLog)
+            return true
+        }
 
         val template = layout.prefixTemplate(guestRoot)
         if (!template.isDirectory) {
@@ -25,8 +41,48 @@ object WinePrefix {
 
         onLog("[PFX] 正在从 default_pfx_arm64 克隆 wine prefix（符号链接改写为 guest 绝对路径）...")
         val ok = cloneTemplate(layout, guestRoot, template, layout.prefixDir(guestRoot), onLog)
+        if (ok) installDxvk(layout, guestRoot, onLog)
         onLog(if (ok) "[PFX] wine prefix 就绪：${ProtonLayout.PREFIX_GUEST_PATH}" else "[PFX] wine prefix 克隆失败")
         return ok
+    }
+
+    /**
+     * 把 DXVK 的 dll 装进 prefix —— 等价于 Proton 发行版的 `proton` 脚本首次运行时做的事。
+     *
+     * 为什么必须做：我们直接拉起 `wine`，不经过 Proton 的启动脚本，而模板 prefix 里的
+     * `system32|syswow64/{d3d11,dxgi,...}.dll` 默认指向 **wine 内建** 实现；
+     * 配合 `WINEDLLOVERRIDES=d3d11=n,b` 时 wine 会判定"找到的是内建 dll"从而**永远不加载 DXVK**，
+     * 表现为 D3D 游戏静默走 WineD3D（甚至黑屏），且看不到任何 DXVK 日志。
+     *
+     * 做法：把覆盖点改成指向 `files/lib/wine/dxvk/<arch>-windows/<dll>` 的 **guest 绝对路径** 符号链接；
+     * 幂等，每次启动都可安全调用。
+     */
+    fun installDxvk(layout: ProtonLayout, guestRoot: File, onLog: (String) -> Unit): Boolean {
+        val prefix = layout.prefixDir(guestRoot)
+        if (!prefix.isDirectory) return false
+
+        var installed = 0
+        for (dll in DXVK_DLLS) {
+            for ((archDir, winDir) in DXVK_ARCH_MAP) {
+                val hostSrc = File(guestRoot, "opt/proton/files/lib/wine/dxvk/$archDir/$dll")
+                if (!hostSrc.isFile) continue
+
+                val link = File(prefix, "drive_c/windows/$winDir/$dll")
+                link.parentFile?.mkdirs()
+                try {
+                    if (link.exists() || Files.isSymbolicLink(link.toPath())) link.delete()
+                    Files.createSymbolicLink(
+                        Paths.get(link.absolutePath),
+                        Paths.get("/opt/proton/files/lib/wine/dxvk/$archDir/$dll")
+                    )
+                    installed++
+                } catch (t: Throwable) {
+                    onLog("[DXVK] 写符号链接失败 ${link.name}: ${t.message}")
+                }
+            }
+        }
+        onLog("[DXVK] 已安装 $installed 个 dll 覆盖点（system32=dxvk aarch64 / syswow64=dxvk i386）")
+        return installed > 0
     }
 
     fun cloneTemplate(
