@@ -129,7 +129,7 @@ jobs:
           LIB=wine-out/wine-android-arm64/arm64-v8a/lib/wine
           if [ -d "$LIB" ]; then
             mkdir -p wine-out/delta
-            tar czf wine-out/delta/wine-delta.tar.gz -C "$LIB" aarch64-unix aarch64-windows/wineandroid.drv 2>/dev/null \
+            tar czf wine-out/delta/wine-delta.tar.gz -C "$LIB" aarch64-unix aarch64-windows/winex11.drv aarch64-windows/wineandroid.drv 2>/dev/null \
               || tar czf wine-out/delta/wine-delta.tar.gz -C "$LIB" aarch64-unix 2>/dev/null || true
             ls -lh wine-out/delta || true
           else

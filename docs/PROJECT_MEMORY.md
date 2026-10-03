@@ -1706,3 +1706,38 @@ Termux 包名与下载 URL、以及 CI 的最小改动（≤6 处）。
 - 检索发现**成功的"直呈"实现都不走 wineandroid.drv**（而是 Vulkan layer + AHardwareBuffer + SurfaceControl）；
 - 检索（读 wine-11.11 `configure.ac`/`aclocal.m4`）确定 **`winex11.drv` 的最小 X11 依赖**与
   **必须用 `--x-includes/--x-libraries` 而非 `LDFLAGS`** 的关键细节。
+
+### 16.21 ✅ D 路线里程碑 1：带 `winex11.drv` 的 native aarch64（bionic）wine 构建成功
+
+**证据**（CI run 37130788104，`with_x=1`，completed/success；日志见 `cache/x11-ci.log`，7.4MB 全量）：
+```
+15:02:15  aarch64-linux-android28-clang -o dlls/winex11.drv/winex11.so -shared -Wl,-Bsymbolic \
+            -Wl,-soname,winex11.so -Wl,-z,defs  dlls/winex11.drv/{bitblt,brush,clipboard,desktop,
+            display,event,graphics,init,keyboard,mouse,opengl,palette,pen,vulkan,window,wintab,
+            x11drv_main,xim,xinerama,xrandr,xrender,xvidmode}.o …
+15:02:15  winegcc -o dlls/winex11.drv/aarch64-windows/winex11.drv aarch64-windows -Wl,--winebuiltin \
+            -shared dlls/winex11.drv/aarch64-windows/dllmain.o dlls/winex11.drv/version.res …
+15:02:26  dlls/winex11.drv/winex11.so  ← 出现在 `make install` 的文件清单中
+```
+⇒ **unix 侧 `winex11.so` 与 PE 侧 `winex11.drv` 都编译并安装成功**，即 D/B' 路线的显示层前提已具备
+（`VK_KHR_xlib_surface` / DXVK 需要的就是它）。
+
+**关键落地细节（已核实，来源见 §16.20 与子代理报告）**：
+- X11 sysroot 来自 Termux aarch64 `.deb`（`xorgproto` + `libx11` + `libxext` + libxfixes/libxcursor/libxi/
+  libxrender/libxrandr + libxcb/libxau/libxdmcp/libandroid-support），CI 里按 `Packages.gz` 索引解析包名，
+  `dpkg-deb -x` 后拍平到 `$X11_SYSROOT/usr/`；缺任何一个头/库直接 `exit 1`（防静默降级）。
+- configure 必须用 **`--x-includes=$X11_SYSROOT/usr/include --x-libraries=$X11_SYSROOT/usr/lib`**
+  （wine 用裸 `AC_PATH_X`；交叉编译时自动探测不做文件系统搜索 ⇒ 只给 `--with-x` 会 `have_x=no`）；
+  且必须走 `X_LIBS` 而非 `LDFLAGS`（`WINE_CHECK_SONAME` 把 `-L` 放进 `LIBS`，靠 `LDFLAGS` 会 `-l` 先于 `-L`）。
+- 另加：`READELF=llvm-readelf`、`LDD=true`、`PKG_CONFIG_LIBDIR`、`-D__ANDROID_UNAVAILABLE_SYMBOLS_ARE_WEAK__`、
+  `--without-wayland --without-xinerama --without-xcomposite --without-xxf86vm`。
+
+**下一步（D 路线第 3 步）**：
+1. CI 产物侧还要补：**把 X11 运行时 DSO 打进包**（`libX11.so`(+`.so.6` 软链)/`libXext.so`/`libxcb.so`/
+   `libXau.so`/`libXdmcp.so`/`libandroid-support.so` + 可选 `libXfixes/libXcursor/libXi/libXrender/libXrandr`），
+   以及 **`share/X11/locale`**（否则 `XSupportsLocale/xim_init` 降级）；App 侧设 `XLOCALEDIR`。
+2. App 侧：内嵌 X（`libXlorie.so`）+ `winex11.drv`，Mali 修法（`bcn_layer`、BGRA/RGBA 格式、
+   先开 `DXVK_LOG_LEVEL=info`）。
+3. **两个必须真机验证的点**（CI 覆盖不到）：① Termux 版 libX11 的 xtrans 补丁把 X socket 路径改成
+   `@TERMUX_PREFIX@/tmp/.X11-unix/X`（不是 `/tmp/.X11-unix/X`）⇒ 需软链或确认抽象 socket 兜底；
+   ② `share/X11/locale` 必须随包部署 + `XLOCALEDIR`。
