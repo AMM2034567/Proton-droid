@@ -53,7 +53,10 @@ log "1.5/5 给 wine 打本地补丁（wineandroid.drv 与 wine-11.0 内部接口
 # wineandroid.drv 在上游多年无人编译，接口已与 wine-11.0 漂移（详见记忆 §16.6 与补丁注释）。
 # 幂等：先把它复位到 pristine（缓存恢复的源码树可能已经打过补丁），再逐个 apply。
 if ls "$PATCH_DIR"/*.patch >/dev/null 2>&1; then
-  git -C "$SRC" checkout -- dlls/ || echo "!! checkout dlls/ 失败（继续尝试 apply）"
+  # ⚠️ 只复位 dlls/wineandroid.drv/，**不要** `git checkout -- dlls/`：
+  # 缓存恢复后工作区的 stat 与 git index 失配，整目录 checkout 会把 dlls/ 下所有源文件按新 mtime 重写，
+  # make 就会重编 3000+ 个文件（run #10 实测：host 阶段 3159 个编译命令、白花 15 分钟）。
+  git -C "$SRC" checkout -- dlls/wineandroid.drv/ || echo "!! checkout wineandroid.drv 失败（继续尝试 apply）"
   for p in "$PATCH_DIR"/*.patch; do
     echo "--- apply $(basename "$p")"
     if ! git -C "$SRC" apply --verbose "$p"; then

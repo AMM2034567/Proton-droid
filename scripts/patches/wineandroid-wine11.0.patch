@@ -1,7 +1,15 @@
 diff --git a/dlls/wineandroid.drv/android.h b/dlls/wineandroid.drv/android.h
 --- a/dlls/wineandroid.drv/android.h
 +++ b/dlls/wineandroid.drv/android.h
-@@ -95,7 +95,7 @@ extern UINT ANDROID_ShowWindow( HWND hwnd, INT cmd, RECT *rect, UINT swp );
+@@ -53,7 +53,6 @@ DECL_FUNCPTR( ANativeWindow_release );
+  * OpenGL driver
+  */
+ 
+-extern pthread_mutex_t drawable_mutex;
+ extern UINT ANDROID_OpenGLInit( UINT version, const struct opengl_funcs *opengl_funcs, const struct opengl_driver_funcs **driver_funcs );
+ 
+ 
+@@ -95,7 +94,7 @@ extern UINT ANDROID_ShowWindow( HWND hwnd, INT cmd, RECT *rect, UINT swp );
  extern LRESULT ANDROID_WindowMessage( HWND hwnd, UINT msg, WPARAM wp, LPARAM lp );
  extern BOOL ANDROID_WindowPosChanging( HWND hwnd, UINT swp_flags, BOOL shaped, const struct window_rects *rects );
  extern BOOL ANDROID_CreateWindowSurface( HWND hwnd, BOOL layered, const RECT *surface_rect, struct window_surface **surface );
@@ -39,4 +47,16 @@ diff --git a/dlls/wineandroid.drv/opengl.c b/dlls/wineandroid.drv/opengl.c
 +     * not visible to drivers, so only invalidate the window here. */
      NtUserRedrawWindow( hwnd, NULL, 0, RDW_INVALIDATE | RDW_ERASE );
  }
+ 
+
+diff --git a/dlls/wineandroid.drv/init.c b/dlls/wineandroid.drv/init.c
+--- a/dlls/wineandroid.drv/init.c
++++ b/dlls/wineandroid.drv/init.c
+@@ -537,7 +537,6 @@ static HRESULT android_init( void *arg )
+ 
+     pthread_mutexattr_init( &attr );
+     pthread_mutexattr_settype( &attr, PTHREAD_MUTEX_RECURSIVE );
+-    pthread_mutex_init( &drawable_mutex, &attr );
+     pthread_mutex_init( &win_data_mutex, &attr );
+     pthread_mutexattr_destroy( &attr );
  

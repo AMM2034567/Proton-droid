@@ -1113,6 +1113,9 @@ E6 去掉虚拟桌面包装，直接 `wine dxvk_probe.exe`。
 | #9 | 39m27s | ❌ 目标侧 `opengl.c:81` 调用 `set_window_opengl_drawable` 未声明 | **host 侧首次全绿**（`host make 退出码: 0`，mingw 修好了 clang ICE；host 全新 configure 到 make 完成约 17 分钟）→ 3/5 交叉 configure ✓ → 4/5 目标编译 9 分钟后崩。根因：`set_window_opengl_drawable()` 在 wine-11.0 里是 **`dlls/win32u/opengl.c` 的 static 函数**（驱动不可见；master 才挪到 `include/wine/opengl_driver.h`，所以代码搜索会误导），而 winex11 在 11.0 里也已无 `update_gl_drawable`（缓存 drawable 由 win32u 自己维护）。且 wineandroid 的 `update_gl_drawable()` **在驱动内零调用者**（纯死代码）⇒ 修法：函数体只留 `NtUserRedrawWindow(...)`，删掉两行不可见的调用。**已验证**：`android.h`/`dllmain.c`/`opengl.c` 三个文件之外，驱动的 `device.o`/`init.o`/`keyboard.o`/`window.o` 都编过了 ⇒ 补丁后应能编完整个驱动。缓存：run #9 的 save 步骤成功，`build-android` 部分产物已入缓存 ⇒ run #10 是增量 |
 | #10 | 运行中 | 补丁 v2（3 处漂移）| 预期：增量编译 → 链接 → `make install` → 安装树产物 |
 
+| #10 | 33m58s | ❌ **链接** `wineandroid.so` 时 `undefined symbol: drawable_mutex`（**驱动所有 .o 都编过了**） | `drawable_mutex` 是旧 wine 由 win32u 导出的全局锁，11.0 里已删；而驱动里**只声明（`android.h:56`）+ 初始化（`init.c:540`）、从不上锁** ⇒ 补丁 v3 删掉这两行。**另一个大发现：host 阶段白花 15 分钟**——`git checkout -- dlls/` 在缓存恢复后（工作区 stat 与 git index 失配）把 `dlls/` 全部源文件按新 mtime 重写 ⇒ make **重编 3159 个文件**（日志实测）。已改成只重置 `dlls/wineandroid.drv/` ⇒ 下一轮 host 应变成秒级。信号：缓存确实生效（`Cache restored from key: …run3711059…`，`PE 编译器: x86_64-w64-mingw32-gcc (GCC) 13-win32`、`已存在，复用` 都出现在日志里） |
+| #11 | 运行中 | 补丁 v3（4 文件漂移）+ 只重置驱动目录 | 预期：host 增量（分钟级）→ 目标编译补完 → 链接 → `make install` → 安装树 |
+
 **CI 用法**：`gh workflow run "wine-android.yml" -f wine_ref=wine-11.0 -f api_level=28 --ref main`；
 日志 `gh run view <id> --log > cache\ci-wine-N.log`；产物 artifact = `wine-android-build`
 （现已含 `wine-out/*.log` 全部四个日志 + `artifacts/**`）。
