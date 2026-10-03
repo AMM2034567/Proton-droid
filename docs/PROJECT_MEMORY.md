@@ -373,10 +373,37 @@ git -c credential.helper= -c http.proxy=http://127.0.0.1:10809 `
      真机截图上能看到 **osu! 启动 logo**。即整条链路（PRoot → Proton → wine X11 → 内嵌 X 服务器 → EGL → SurfaceView）已通电。
    - 结论：早期"立即退出"是更新器在无网/慢网下放弃导致的，不是运行时缺陷。
    - 调试开关：往 `files/wine_debug.txt` 写 `err+all,warn+all` 即可改变 WINEDEBUG（免重编）；
-     默认 `-all`。
-   - 下一步：让 osu! 完成更新（或换无更新器的 goose 对照）、确认稳定帧率、记录性能基线。
-6. ⬜ 记录性能基线（帧率、CPU/GPU 占用），作为 C 方案的对比依据。
-7. ⬜ GPL 合规三件套（LICENSE + `licenses/` + App 内开源许可页），见 `docs/THIRD_PARTY_NOTICES.md`。
+     往 `files/extra_env.txt` 写 `KEY=VALUE`（每行一条）可追加任意 guest 环境变量
+     （如 `MONO_LOG_MASK=socket`、`FEX_*`），同样免重编。
+6. ✅ **进一步定位（同日）**：
+   a. **osu! 卡在更新器的 .NET 层，不是网络**：抓 `WINEDEBUG=+winsock` 只见 `localhost` 解析，
+      游戏进程对 `osu.ppy.sh` 一次 socket 都没开；`update.log` 停在 `Requesting update information...`
+      约 4~10 分钟后写 `Force update requested` 并退出。而 guest 侧网络全部正常
+      （`osu.ppy.sh` A/AAAA 记录、TCP 443、HTTPS 200、DoH 交叉验证过域名有效性；
+      `dl.osu.ppy.sh`/`api.osu.ppy.sh`/`c1.ppy.sh` 是 NXDOMAIN，不存在的域名）。
+   b. 期间修掉三个**真实环境缺陷**（都留在 guest 里，正式版应打进 rootfs）：
+      - 缺 `libgnutls.so.30` → wine 完全无 TLS（`winediag:gnutls_process_attach failed to load libgnutls,
+        no support for encryption`）→ 装 `libgnutls30`（apt 解包；dpkg 收尾会报
+        `/var/lib/dpkg/status-old: Permission denied`，库已就位，不影响使用）
+      - 缺 `libgcrypt.so.20` → wine 的 ECC/ECDHE 不可用（`gnutls_ecdh_compute_key not found` +
+        `failed to load gcrypt`）→ 手工从 Debian 包解出 `libgcrypt.so.20.2.8` 与
+        `libgpg-error.so.0.42.1` 放进 `usr/lib/aarch64-linux-gnu/`（ldd 0 缺失）
+      - guest `resolv.conf` 只有 8.8.8.8/8.8.4.4（国内间歇性解析失败）→ 改为
+        `192.168.6.1 / 114.114.114.114 / 223.5.5.5 / 8.8.8.8`
+        （写 resolv.conf 别用 heredoc：Android mksh 的 heredoc 需要临时文件会 Permission denied，
+        用 `echo >` / `echo >>`）
+   c. 曾观察到一次 **FEX WOW64 崩溃**：`EXCEPTION_ACCESS_VIOLATION c0000005`，
+      回溯 `libwow64fex.dll+0x3650` / `wow64.dll+0x1C85C`；补齐 TLS 库后未再复现。需持续观察。
+   d. ✅ **成功跑起真实 .NET 游戏**：`GooseDesktop.exe`（Desktop Goose，无更新器）进程稳定、
+      建出 1280x720 窗口、20 秒间隔两次截图哈希不同、`LorieNative` 稳定 6~9 FPS → 活跃渲染。
+      这是 B 方案「游戏真在 App 内跑并出画面」的完整证据（此前 osu! 启动 logo 是第一次出画面）。
+   e. 已知限制：**没有合成器（compositor）**，透明/分层窗口按不透明呈现
+      （GooseDesktop 的透明覆盖窗显示为白/蓝块）；音频 `mmdevapi` 无后端
+      （`pulse,alsa,oss,coreaudio` 全部加载失败）→ 归入 P3。
+7. ⬜ 记录性能基线（帧率、CPU/GPU 占用），作为 C 方案的对比依据。
+   **下一批要做的**：DXVK/Vulkan WSI 桥（日志已确认 `VK_KHR_xcb_surface is not supported`，
+   所以 DXVK 走不通 X11 present）、osu! 更新器绕过方案、音频后端、rootfs 内置上述库。
+8. ⬜ GPL 合规三件套（LICENSE + `licenses/` + App 内开源许可页），见 `docs/THIRD_PARTY_NOTICES.md`。
 
 **P1 — 正式版运行时下载与发布链路**（见第 12 节）
 

@@ -214,10 +214,28 @@ class ProtonProcessManager(private val context: Context) {
             "DXVK_ENABLE_NVAPI=0",
             "DXVK_LOG_LEVEL=none",
             "VKD3D_DEBUG=none",
-            // --- 显示与音频（Termux-X11 / PulseAudio）---
+            // --- 显示与音频（内嵌 X 服务器 / PulseAudio）---
             "DISPLAY=:0",
             "PULSE_SERVER=127.0.0.1"
-        )
+        ) + readExtraEnv()
+    }
+
+    /**
+     * 调试用：读取 files/extra_env.txt（每行 `KEY=VALUE`，`#` 注释）并追加进 guest 环境。
+     * 用于免重编调整 MONO_LOG_*、FEX_*、WINEDLLOVERRIDES 等排查开关。
+     */
+    private fun readExtraEnv(): Array<String> {
+        return try {
+            val f = File(context.filesDir, "extra_env.txt")
+            if (!f.isFile) return emptyArray()
+            f.readLines()
+                .map { it.trim() }
+                .filter { it.isNotEmpty() && !it.startsWith("#") && it.contains('=') }
+                .toTypedArray()
+        } catch (e: Exception) {
+            Log.w(tag, "readExtraEnv failed: ${e.message}")
+            emptyArray()
+        }
     }
 
     /** 供自检使用的最小环境（只跑 proot --version） */
