@@ -1108,6 +1108,8 @@ E6 去掉虚拟桌面包装，直接 `wine dxvk_probe.exe`。
 
 | #6 | 1m13s | ❌ **死在"打补丁"之前，零日志** | 根因是低级的自伤：`SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"` 写在了 `cd "$SRC"`（进 wine 源码树）**之后** ⇒ 相对路径 `./scripts` 不存在 ⇒ `cd ./scripts: No such file or directory` ⇒ `set -e` 直接退出。修法：`SCRIPT_DIR`/`PATCH_DIR` 挪到脚本**最顶部**（任何 `cd` 之前），并给 apply 加显式失败诊断。**两条副产物**：① 新缓存机制生效了（run #6 的 `保存缓存（失败也存…）` 步骤成功，run #7 起能直接恢复 `wine-work/wine` 源码树）；② **运行中/失败的日志获取姿势**：`gh api repos/<o>/<r>/actions/jobs/<job_id>/logs --allow-escape-sequences` 可直接拿全文（`gh run view --log` 会因沙箱拒绝写 `%LocalAppData%\GitHub CLI` 缓存而失败） |
 
+| #7 | 2m00s | ❌ host 侧 clang ICE **搬到 x86_64-windows PE**：`dlls/msvcp100/x86_64-windows/{ios,locale}.o`（wine msvcp90 的内联汇编 RTTI `@__asm_dummy_..._rtti` 把 clang 18.1.3 的 X86 Assembly Printer 搞崩） | `--enable-archs=x86_64` 只挡住 i386，挡不住 x86_64。根因：wine-11.0 `configure.ac` 的 PE 编译器是**自动探测**——`x86_64-w64-mingw32-gcc` → `amd64-w64-mingw32-gcc` → `…-clang` → `clang`（`--enable-sast` 才会默认 clang），我们没装 mingw ⇒ 落到 `/usr/bin/clang` 18.1.3 ⇒ ICE。修法：workflow 里 apt 装 **`gcc-mingw-w64-x86-64`**，脚本顶部也打印选中的 PE 编译器作为证据。附：host 工具守卫按预期生效（`!! host 工具缺失: tools/wine/wine` → exit 1），run #7 的 artifact 只有 23KB（纯日志，无 tar，符合预期） |
+
 **CI 用法**：`gh workflow run "wine-android.yml" -f wine_ref=wine-11.0 -f api_level=28 --ref main`；
 日志 `gh run view <id> --log > cache\ci-wine-N.log`；产物 artifact = `wine-android-build`
 （现已含 `wine-out/*.log` 全部四个日志 + `artifacts/**`）。

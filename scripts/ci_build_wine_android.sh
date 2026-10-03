@@ -30,6 +30,14 @@ PATCH_DIR="$SCRIPT_DIR/patches"
 
 [ -d "$TOOLCHAIN" ] || { echo "!! 找不到 NDK toolchain: $TOOLCHAIN"; ls -d "${ANDROID_HOME:-/usr/local/lib/android/sdk}"/ndk/* 2>/dev/null || true; exit 1; }
 command -v gradle >/dev/null || echo "!! 警告: PATH 里没有 gradle，APK 目标会失败（wine configure 会直接报错）"
+# PE 侧编译器：wine configure 的自动探测顺序是 x86_64-w64-mingw32-gcc → ... → clang。
+# 没有 mingw 就用 /usr/bin/clang，而 clang 18.1.3 在 wine msvcp90 的内联汇编 RTTI 上会 ICE
+# （run #5 dinput/i386-windows、run #7 msvcp100/x86_64-windows）⇒ 必须装 mingw。
+if command -v x86_64-w64-mingw32-gcc >/dev/null 2>&1; then
+  echo "PE 编译器: $(x86_64-w64-mingw32-gcc --version | head -1)"
+else
+  echo "!! 警告: 没找到 x86_64-w64-mingw32-gcc，PE 会退回 clang（已知会 ICE）"
+fi
 
 mkdir -p "$WORK" "$OUT"
 

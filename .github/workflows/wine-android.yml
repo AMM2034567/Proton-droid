@@ -46,7 +46,10 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq build-essential autoconf bison flex pkg-config \
-            gettext gcc-multilib libtool python3 git unzip wget
+            gettext gcc-multilib libtool python3 git unzip wget \
+            gcc-mingw-w64-x86-64
+          echo "--- PE 编译器（wine configure 会优先选 mingw gcc，避免 clang 的 X86 汇编器崩溃）---"
+          x86_64-w64-mingw32-gcc --version | head -1
 
       - name: 安装 gradle 8.x（wine 的 Android 构建硬性要求）
         run: |
