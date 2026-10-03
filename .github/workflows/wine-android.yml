@@ -102,7 +102,7 @@ jobs:
         if: always()
         run: |
           echo "### wine (aarch64-android) 构建" >> $GITHUB_STEP_SUMMARY
-          for f in configure-host make-host configure-android make-android; do
+          for f in configure-host make-host configure-android make-android make-install; do
             echo "" >> $GITHUB_STEP_SUMMARY
             echo "<details><summary>wine-out/$f.log (tail 25)</summary>" >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY

@@ -108,19 +108,64 @@ if [ ! -f config.status ] || [ "$(cat .configure-opts 2>/dev/null || true)" != "
 fi
 
 log "4/5 编译（这一步最久，CI 上约 20~60 分钟；日志实时滚动，不再 tail 缓冲）"
+# wine 的 Android 目标里有一条 gradle 规则要产出 dlls/wineandroid.drv/wine-debug.apk（configure.ac:3819）。
+# 已核实的两个事实（见 cache/refs/wineandroid/）：
+#   1) build.gradle.in 写死 AGP 2.2.1 + compileSdkVersion 25 + buildToolsVersion 25.0.3 + jcenter()，
+#      还要 rsvg-convert —— 在 JDK17 + Gradle 8.7 的 runner 上必然失败；
+#   2) wine-11.0 里没有任何规则往 dlls/wineandroid.drv/{assets,lib} 填 payload
+#      （build.gradle.in 的 assets.srcDirs/jniLibs.srcDirs 指向的就是这两个空目录）
+#      ⇒ 就算侥幸产出 APK 也不含 wine，跑了没用。
+# 我们真正要的是 `make install` 的安装树，所以默认用 stub gradle 让这条规则"成功"跳过；
+# 需要真打 APK 时设 WINE_APK_MODE=real（默认 stub）。
+if [ "${WINE_APK_MODE:-stub}" = "stub" ]; then
+  STUB_BIN="$WORK/bin-stub"
+  mkdir -p "$STUB_BIN"
+  cat > "$STUB_BIN/gradle" <<'STUB'
+#!/bin/sh
+# stub gradle：只满足 wine 的 wine-debug.apk 规则，不做真正的 Android 构建
+echo "[stub gradle] skip real APK build (wine-11.0 的 APK 规则用 AGP 2.2.1/jcenter，不可用且不含 payload): $*"
+mkdir -p build/outputs/apk/debug
+: > build/outputs/apk/debug/wine-debug.apk
+exit 0
+STUB
+  chmod +x "$STUB_BIN/gradle"
+  export PATH="$STUB_BIN:$PATH"
+  echo "已启用 gradle stub（PATH 前置 $STUB_BIN；WINE_APK_MODE=real 可关闭）"
+fi
 set +e
 stdbuf -oL -eL make -j"$JOBS" 2>&1 | stdbuf -oL -eL tee "$OUT/make-android.log"
 MAKE_RC=${PIPESTATUS[0]}
 set -e
 echo "make 退出码: $MAKE_RC"
 
+log "4.5/5 make install（安装树 = C2 真正要用的产物形态）"
+# exec_prefix 在 Android 分支默认是 $prefix/arm64-v8a（configure.ac:1040-1045）
+set +e
+stdbuf -oL -eL make install 2>&1 | stdbuf -oL -eL tee "$OUT/make-install.log"
+INSTALL_RC=${PIPESTATUS[0]}
+set -e
+echo "make install 退出码: $INSTALL_RC"
+
 log "5/5 收集产物"
 mkdir -p "$OUT/artifacts"
-# wine 的 Android 构建把安装树放在 prefix/<abi>（configure.ac 里 exec_prefix 默认 $prefix/arm64-v8a）
+# ① 安装树（C2 用这个）：$PREFIX/arm64-v8a/{bin,lib} + share/wine/**
+if [ -d "$PREFIX" ]; then
+  tar czf "$OUT/artifacts/wine-android-arm64-install.tar.gz" -C "$PREFIX" . 2>/dev/null || true
+else
+  echo "!! 安装树不存在: $PREFIX（make install 失败？见 $OUT/make-install.log）"
+fi
+# ② build 树（排查用，去掉目标文件）
 tar czf "$OUT/artifacts/wine-android-arm64-build.tar.gz" -C "$TGTBUILD" \
   --exclude='*.o' --exclude='*.a' --exclude='.git' . 2>/dev/null || true
-APK=$(find "$TGTBUILD" "$SRC" -name 'wine-debug.apk' 2>/dev/null | head -1 || true)
-[ -n "$APK" ] && cp -v "$APK" "$OUT/artifacts/wine-debug.apk" || echo "(未生成 APK)"
+# ③ APK：stub 模式下那个 0 字节占位文件不算产物，不收集
+if [ "${WINE_APK_MODE:-stub}" = "real" ]; then
+  APK=$(find "$TGTBUILD" "$SRC" -name 'wine-debug.apk' -size +1k 2>/dev/null | head -1 || true)
+  [ -n "$APK" ] && cp -v "$APK" "$OUT/artifacts/wine-debug.apk" || echo "(未生成 APK)"
+else
+  echo "(跳过 APK：stub 模式；wine-11.0 的 APK 不含 payload，C2 用安装树)"
+fi
 ls -lh "$OUT/artifacts" || true
 
-exit "$MAKE_RC"
+echo "汇总: make=$MAKE_RC make-install=$INSTALL_RC"
+[ "$MAKE_RC" = "0" ] || exit "$MAKE_RC"
+exit "$INSTALL_RC"

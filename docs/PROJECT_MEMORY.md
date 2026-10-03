@@ -985,16 +985,29 @@ E6 去掉虚拟桌面包装，直接 `wine dxvk_probe.exe`。
    ```
    ⇒ 只要 `--host=aarch64-linux-android` + `gradle` + `$ANDROID_HOME`，wine 就能编出
    **自己带 Java 侧的 APK**。
-3. **Java 侧契约**（`WineActivity.java` 摘要，移植时要对齐）：
-   - native 方法：`wine_init()`、`wine_desktop_changed(w,h)`、`wine_config_changed(dpi)`、
-     `wine_surface_changed(int hwnd, Surface surface, boolean opengl)`、
-     `wine_motion_event(hwnd,action,x,y,state,vscroll)`、`wine_keyboard_event(hwnd,action,keycode,state)`
-   - 每个 HWND 对应一个 `WineView extends TextureView`（`onSurfaceTextureAvailable` 把 `Surface`
-     交给 native）⇒ **ANativeWindow 的来源**；
-   - 启动流程：把 APK assets（`files.sums`/`sums.sums`/`share/`/`<abi>/`）解到 `getFilesDir()` →
-     `System.load(<abi>/lib/wine/<so_dir>/{ntdll.so,win32u.so,wineandroid.so})` → 执行
-     `<abi>/lib/wine/<so_dir>/wine c:\windows\system32\explorer.exe /desktop=shell,android <cmd>`
+3. **Java 侧契约**（⚠️ **2026-10-04 更正：这里原来抄的是 wine-11.19 的契约，和 CI 的 `wine_ref=wine-11.0`
+   不兼容！** 权威文件见 `cache/refs/wineandroid/WineActivity.java`（wine-11.0 真身，893 行；11.19 的
+   对照版留在同目录 `WineActivity.wine-11.19.java`）。切换点在 wine-11.6~11.10 之间）：
+   - **wine-11.0**：`private native String wine_init(String[] cmdline, String[] env)`——**wine 跑在 app 进程内**，
+     `System.load(<abi>/lib/wine/<so_dir>/ntdll.so)` 后调 `wine_init` 即成为 wine 主线程（**绝不能在 UI 线程**，
+     上游另起 `new Thread`）；`wine_init` 阻塞到 wine 退出；**返回值是未初始化的栈内存，别用**。
+     Java→native 只注册 5 个：`wine_desktop_changed(int,int)`、`wine_config_changed(int)`、
+     `wine_surface_changed(int,Surface,boolean)`、`wine_motion_event(int×5,boolean)`、`wine_keyboard_event(int×4)`。
+     native→Java：`createDesktopWindow(int)`、`createWindow(int,boolean,int,float,int)`（签名 `(IZIFI)V`）、
+     `destroyWindow(int)`、`windowPosChanged(…17 个 int)`、`setParent(int,int,float,int)`、`setCursor(…)`。
+   - **wine-11.19（旧记忆）**：`wine_init()` 无参 + `ProcessBuilder` 另起进程 + `System.load` 三个 `.so` +
+     `createDesktopView()`（无参）+ `createWindow(hwnd,is_desktop,opengl,parent)` + 无 scale。
+     **混用会直接炸**：11.19 的 Java 配 11.0 的 native ⇒ `GetMethodID("createWindow","(IZIFI)V")` 失败
+     ⇒ `FIXME("method createWindow not found")` ⇒ **一个窗口都建不出来**。
+   - 每个 HWND 对应 `WineView extends TextureView`（`onSurfaceTextureAvailable` 把 `Surface` 交给 native）
+     ⇒ **ANativeWindow 的来源**；每个 HWND 两个 `WineWindowGroup`（整窗 + 客户区），App 必须提供根
+     `TopView extends ViewGroup`（`setContentView` 的那个，它的尺寸经 `wine_desktop_changed` 上报为 wine 屏幕尺寸）。
+   - 包名**不能改**：`ntdll.so` 里 `WINE_JAVA_CLASS` 硬编码 `"org/winehq/wine/WineActivity"`（loader.c:1931）。
    - ABI 目录映射：`x86→i386-unix`、`x86_64→x86_64-unix`、`arm64-v8a→aarch64-unix`。
+   - **`/desktop` 第三字段必须是 `android`**（`programs/explorer/desktop.c:43` 的
+     `default_driver = L"mac,x11,wayland"` **不含 android**；第三字段会被拼成 `wine<X>.drv` 去 LoadLibrary）。
+     ⇒ 用 `/desktop=shell,,android` 或 `/desktop=shell,1280x720,android`；两字段写法 ⇒ 依次试
+     mac/x11/wayland 全部失败 ⇒ `DriverError` ⇒ `null_user_driver` ⇒ **一个窗口都不出**。
 4. **构建策略：只走 CI**（用户明确要求：本机带不动 wine 这种体量的构建）。
    本机只做：写脚本/看日志/装产物/真机验证。
 
@@ -1045,6 +1058,43 @@ E6 去掉虚拟桌面包装，直接 `wine dxvk_probe.exe`。
 3. C2 出画后：接 DXVK + vulkaninfo 验证 `VK_KHR_android_surface`（C3），必要时用 llvm-mingw 编
    ARM64 Windows PE 版 DXVK 探针。
 
+### 16.7 C2 接入前的硬事实与阻塞点（2026-10-04 从上游源码逐行核实）
+
+参考源已落盘：`cache/refs/wineandroid/`（`device.c` / `window.c` / `init.c` / `keyboard.c` / `opengl.c` /
+`android_native.h` / `WineActivity.java`(11.0) / `upstream-loader.c` / `upstream-explorer-desktop.c` /
+`upstream-win32u-driver.c` / `UPSTREAM_MANIFEST.md` …）。下面每条都有源码位置，别再靠猜。
+
+1. **wine-11.0 的 `wineandroid.drv` 完全没有 Vulkan 代码**（全仓搜 `VK_KHR_android_surface` /
+   `AndroidSurfaceCreateInfoKHR` 只命中 vkd3d 自己的 util；`win32u/driver.c:908` 只有 `nulldrv_VulkanInit`，
+   且 `wineandroid.drv` 的 driver funcs 表（init.c:297-323）**没有 `.pVulkanInit`**）。
+   ⇒ **C3 的 `VkSurfaceKHR` 在 11.0 里没有生产点，是要新写的代码**。建议先插一个 **C2.5**：用
+   vkcube-android/vulkaninfo 证明 `VK_KHR_android_surface` 能对同一个 ANativeWindow 出画，再选路线
+   （a 让 DXVK 直调原生 ICD；b 给 wineandroid.drv 加 `pVulkanInit` + 给 winevulkan 打补丁；c 放弃 WSI 走 CPU blit）。
+2. **CI 产物形态（C1 的真正验收标准）= `make install` 的安装树**，不是 APK、也不只是 build 树：
+   `$PREFIX/arm64-v8a/{bin/wine,bin/wineserver}` + `lib/wine/aarch64-unix/*.so`（`ntdll.so`/`win32u.so`/
+   `wineandroid.so`）+ `lib/wine/aarch64-windows/*.dll` + `share/wine/**`（`exec_prefix` 默认 `${prefix}/arm64-v8a`，
+   configure.ac:1040-1045）。wine 自带的 gradle/APK 规则（configure.ac:3819）用 **AGP 2.2.1 + compileSdk 25 +
+   jcenter()**，且 wine-11.0 没有任何规则往 `dlls/wineandroid.drv/{assets,lib}` 填 payload
+   ⇒ **APK 必败且无用**，CI 里用 gradle stub 跳过（`WINE_APK_MODE=stub`，默认），别再把它当验收标准。
+3. **C 方案不再用 proot 跑 wine**：CI 产物是 bionic（`--host=aarch64-linux-android`），在 glibc rootfs 里
+   加载不了。模型是「wine 直接在 app 进程 dlopen，PE 进程由 wine 自己起」。proot 只剩解包杂活。
+4. **两条呈现路径**：`opengl` 形参在 native 里叫 `client`，含义是"客户区表面"，不是"用不用 GL"。
+   `winecfg`/`notepad`/`explorer` 全走 **CPU 路径**（`android_surface_flush` → `NATIVE_WINDOW_LOCK` →
+   `gralloc_lock`；**没有 gralloc 就回退** `native_buffer_wrapper.bits` 的 shm）⇒ **C2 不需要 GL/Vulkan/DXVK**，
+   这也是 C2 风险最低的原因。最大技术风险是 Android 14/15 上 `hw_get_module("gralloc")` 是否还在（init.c:443-490）。
+5. **输入链路没有时间戳**（`mi.time=0`/`ki.time=0`）；11.0 缺 11.19 的"鼠标键去重补丁"
+   （`ACTION_BUTTON_PRESS/RELEASE`+`BUTTON_PRIMARY` 直接 `return true`），建议在纯 Java 侧补上。
+6. **真机验收顺序**（含最关键的失败指纹）：`System.load(ntdll.so)` ✓ → logcat `wine` tag 出现
+   `desktop_changed: WxH` / `create desktop view` → `onSurfaceTextureAvailable` + `got buffer … fence` →
+   **没有** `The graphics driver is missing`（说明 `wineandroid.drv` LoadLibrary 成功）→ **没有**
+   `failed to load gralloc module`（有则走 bits 回退）→ 触摸/按键出现 `BUTTONDOWN/MOUSEMOVE/KEYDOWN`。
+   ⚠️ 别设 `WINEDEBUGLOG`：它会把**整个 app 进程的 stderr** `dup2` 到文件，logcat 里 wine 的 ERR 全消失。
+7. **保留回退路径不删**：`display/XServer.kt`、`ui/GameViewActivity.kt`、`libXlorie.so`、`cpp/proton_bridge.cpp`
+   （wine 不走 `nativeSetSurface`）、`ProtonProcessManager.kt`、`WinePrefix.kt`。新增
+   `org/winehq/wine/WineActivity.java`（上游 11.0 原样，仅允许 5 处补丁）、`WineAndroidPayload.kt`（解 assets）、
+   `DisplayBackend.kt`（`files/display_backend.txt`：`x11` 默认 / `android` 走 C 方案）。
+
+
 ### 16.6 CI 迭代记录（每轮都是真跑，别重复踩）
 
 | 轮 | 耗时 | 结果 | 结论 |
@@ -1052,7 +1102,7 @@ E6 去掉虚拟桌面包装，直接 `wine dxvk_probe.exe`。
 | #1 | 1m41s | ❌ host configure 就崩 | 报 `X 32-bit development files not found` ⇒ host 侧 configure 必须显式 `--without-x`（以及其它 `--without-*`） |
 | #2 | 2m29s | ⚠️ host configure ✓、**目标 configure ✓**（`Finished. Do 'make' to compile Wine.`）、`make` 崩 | `No rule to make target '<host build>/tools/wine/wine'` ⇒ 目标侧需要 host 侧**完整构建**（不能只编 winebuild/widl/winegcc）；另 `--without-ldap` 是无效选项（会 warning） |
 | #3 | 3m5s | ❌ **host 完整 `make` 崩在编译器 ICE**（3/5、4/5 从未执行 ⇒ 零产物） | `dlls/krnl386.exe16/i386-windows/selector.o`：`clang: note: diagnostic msg` + `PLEASE ATTACH THE FOLLOWING FILES TO THE BUG REPORT` ⇒ clang ICE 编 Win16 模块。两条修复：① host/target configure 都加 `--disable-win16 --disable-tests`（Android 跨编译不需要 Win16）；② 2/5 的 `make` 原本没有 `set +e` 保护，`set -euo pipefail` 直接带走脚本，导致目标侧 configure/make 的日志全部丢失 ⇒ 已加保护并检查 `tools/wine/wine` 是否存在。另外 `continue-on-error: true` 让 workflow 顶层显示 success（用户误判「提前结束」）⇒ 已删除；上传路径改为 `wine-out/*.log`（原来只有 configure-android/make-android，host 日志没上传） |
-| #4 | 运行中 | 见下 | 预期至少跑完 host 完整构建 + 目标 configure；失败也会留下四个 `.log` |
+| #4 | 运行中（≥20 分钟） | ✅ **首次越过全部历史阻塞点**：host configure ✓ → **host 完整 `make` ✓**（`--disable-win16` 生效，不再崩 `selector.o`）→ 3/5 交叉 configure ✓ → 正在 4/5 目标 `make` | 已知它**一定**还会栽在 gradle/APK 规则上（见 §16.7 阻塞点 2），所以 #5 已提前改好：gradle stub + `make install` + 安装树产物 + `stdbuf` 行缓冲（实时日志） |
 
 **CI 用法**：`gh workflow run "wine-android.yml" -f wine_ref=wine-11.0 -f api_level=28 --ref main`；
 日志 `gh run view <id> --log > cache\ci-wine-N.log`；产物 artifact = `wine-android-build`
