@@ -174,6 +174,17 @@ public class WineActivity extends Activity
 
         createProgressDialog( 0, "Setting up the Windows environment..." );
 
+        new android.os.Handler( getMainLooper() ).postDelayed( new Runnable() { public void run() {
+            try
+            {
+                android.util.DisplayMetrics dm = getResources().getDisplayMetrics();
+                Log.i( LOGTAG, "fallback report desktop size " + dm.widthPixels + "x" + dm.heightPixels );
+                wine_desktop_changed( dm.widthPixels, dm.heightPixels );
+                wine_config_changed( getResources().getConfiguration().densityDpi );
+            }
+            catch (Throwable t) { Log.w( LOGTAG, "fallback report failed: " + t ); }
+        }}, 3000 );
+
         Log.i( LOGTAG, "abi=" + wine_abi + " bindir=" + bindir + " dlldir=" + dlldir );
         Log.i( LOGTAG, "WINELOADER=" + loader + " exists=" + loader.isFile() + " cmdline=" + cmdline );
         String so_dir = dlldir.toString() + get_so_dir( wine_abi ) + "/";
@@ -959,8 +970,28 @@ public class WineActivity extends Activity
     public void create_desktop_window( int hwnd )
     {
         Log.i( LOGTAG, String.format( "create desktop view %08x", hwnd ));
+        /* 真机：驱动侧 fetch_display_metrics 拿到 screen 0x0 ⇒ 窗口全 0 尺寸、屏幕上什么都看不见。
+           尺寸唯一来源是 TopView.onSizeChanged -> wine_desktop_changed(w,h)，
+           这里在桌面视图创建时先用真实 DisplayMetrics 主动报一次。 */
+        try
+        {
+            android.util.DisplayMetrics dm = getResources().getDisplayMetrics();
+            Log.i( LOGTAG, "report desktop size " + dm.widthPixels + "x" + dm.heightPixels );
+            wine_desktop_changed( dm.widthPixels, dm.heightPixels );
+            wine_config_changed( getResources().getConfiguration().densityDpi );
+        }
+        catch (Throwable t) { Log.w( LOGTAG, "report desktop size failed: " + t ); }
         setContentView( new TopView( this, hwnd ));
         progress_dialog.dismiss();
+        /* 真机：驱动侧 fetch_display_metrics 拿到 screen 0x0 ⇒ 窗口全 0 尺寸。
+           这里主动用真实屏幕尺寸喂一次；TopView.onSizeChanged 之后还会再报一次。 */
+        try
+        {
+            android.util.DisplayMetrics dm = getResources().getDisplayMetrics();
+            Log.i( LOGTAG, "report desktop size " + dm.widthPixels + "x" + dm.heightPixels );
+            wine_desktop_changed( dm.widthPixels, dm.heightPixels );
+        }
+        catch (Throwable t) { Log.w( LOGTAG, "report desktop size failed: " + t ); }
         wine_config_changed( getResources().getConfiguration().densityDpi );
     }
 

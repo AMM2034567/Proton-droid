@@ -119,7 +119,17 @@ diff --git a/dlls/wineandroid.drv/window.c b/dlls/wineandroid.drv/window.c
  
      for (;;)
      {
-@@ -975,8 +979,11 @@ BOOL ANDROID_CreateWindow( HWND hwnd )
+@@ -971,12 +975,21 @@ BOOL ANDROID_CreateWindow( HWND hwnd )
+ {
+     TRACE( "%p\n", hwnd );
+ 
++    if (!desktop_tid)
++    {
++        init_event_queue();
++        start_android_device();
++    }
++
+     if (hwnd == NtUserGetDesktopWindow())
      {
          struct android_win_data *data;
  
@@ -133,7 +143,7 @@ diff --git a/dlls/wineandroid.drv/window.c b/dlls/wineandroid.drv/window.c
          if (!(data = alloc_win_data( hwnd ))) return FALSE;
          release_win_data( data );
      }
-@@ -1240,6 +1247,15 @@ BOOL has_client_surface( HWND hwnd )
+@@ -1240,6 +1253,15 @@ BOOL has_client_surface( HWND hwnd )
   */
  BOOL ANDROID_CreateDesktop( const WCHAR *name, UINT width, UINT height )
  {
@@ -149,7 +159,7 @@ diff --git a/dlls/wineandroid.drv/window.c b/dlls/wineandroid.drv/window.c
      /* wait until we receive the surface changed event */
      while (!screen_width)
      {
-@@ -1250,5 +1266,7 @@ BOOL ANDROID_CreateDesktop( const WCHAR *name, UINT width, UINT height )
+@@ -1250,5 +1272,7 @@ BOOL ANDROID_CreateDesktop( const WCHAR *name, UINT width, UINT height )
          }
          process_events( QS_ALLINPUT );
      }
