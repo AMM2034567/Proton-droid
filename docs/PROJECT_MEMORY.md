@@ -1405,3 +1405,31 @@ APK 侧改动（Java）不需要 CI，本地 `assembleDebug` + `adb install -r` 
    （前缀里 `HKCU\Software\Wine\Explorer` 的 `Desktop`/`ShellFolders`、或 wine 启动时自动拉 explorer 的路径），
    否则它会持续污染显示设备的状态；
 3. 之后再看 `winecfg` 的窗口能否出现在 TextureView 上。
+
+### 16.13 v11 真机结果：主进程**收到了**桌面尺寸，但之后阻塞（C 方案最接近成功的一次）
+
+补丁 v11（首个窗口就启动设备线程/Java 桌面视图）+ Java 侧主动上报尺寸，真机日志：
+```
+0024:trace:android:process_events DESKTOP_CHANGED 2294x914      ← 主进程收到尺寸！(之前一直是 0x0)
+```
+- 这条是**主进程 `0024`**（有 JVM 的那个）打出来的 ⇒ Java 的 `wine_desktop_changed(2294,914)`
+  经事件管道送到了驱动、被 `process_events` 处理 ✓ —— **Java ↔ wine 的尺寸通道打通**
+- 驱动早先的活动也都正常：`init_gralloc` ✓ `device_thread` ✓ `ANDROID_CreateWindow` ✓
+  `create_ioctl_window` ✓（Java 侧窗口真的创建了）
+- 但 `DESKTOP_CHANGED` 之后日志**不再增长**（814 行停住），进程仍活着 ⇒ wine 在
+  `ANDROID_CreateDesktop` 之后、创建 Java 桌面视图（TopView）之前**阻塞**了
+  （Java 侧始终没有 `create desktop view` 日志 ⇒ `createDesktopWindow(hwnd)` 没被调用）
+- `fetch_display_metrics screen 0x0 / 1x1` 来自**没有 JVM 的子进程**（explorer/services），与主进程无关
+
+**下一步（定位阻塞点）**：
+1. 看主进程线程栈：`adb shell run-as com.protondroid cat /proc/<pid>/task/*/stack` 拿不到的话，
+   用 `debuggerd -b <pid>` 或 `kill -3`（Java 栈）＋ wine 的 `+sync`/`+server` 通道；
+2. 重点怀疑 `start_android_device()` 里的 `WaitForMultipleObjects(2, handles, FALSE, INFINITE)`
+   —— 它等设备线程 signal 事件；若设备线程里的 `android_java_init` 卡住（例如 Java 侧
+   `setContentView` 在 UI 线程之外调用、或 progress_dialog 相关），主进程就永远等下去；
+3. 也可先临时把 `start_android_device` 的等待改成带超时，观察是否从此处卡住。
+
+**已确认有效的机制（供后续参考）**：
+- 驱动选择：v10 win32u 兜底（显示设备 GUID **每次运行随机**，写死注册表键不可能命中）
+- 前缀：必须由 wineboot 先建（否则 wine 报 32-bit wineserver arch 不匹配）
+- 目标程序 = 主程序（同进程、有 JVM）；explorer 等 fork 子进程天然不可用
