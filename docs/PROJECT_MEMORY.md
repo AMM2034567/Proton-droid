@@ -1273,3 +1273,6 @@ pwsh -File cache\c2-retest.ps1
 
 **若仍失败**：`cache\wine-log-latest.txt` 是完整的 wine stderr（`err+all,warn+all,fixme+all`），
 按里面的第一处 `err:` 继续定位——注意 wine 的 ERR/WARN 日志都在这个文件里，logcat 里看不到。
+**已 staged（无需手机）**：补丁 v6 的增量包已下到 cache\wine-delta-latest.tar.gz（7.35MB，run 37120771950），
+cache\c2-retest.ps1 默认就用它 ⇒ 手机插上后只需 pwsh -File cache\c2-retest.ps1。
+校验：v6 的 wineandroid.so 779672B / sha256 C8F78087…（v5 是 779704B / C7B0CF89…，确认窗口改动已进包）。
