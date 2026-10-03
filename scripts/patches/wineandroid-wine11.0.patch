@@ -9,15 +9,7 @@ diff --git a/dlls/wineandroid.drv/android.h b/dlls/wineandroid.drv/android.h
  extern UINT ANDROID_OpenGLInit( UINT version, const struct opengl_funcs *opengl_funcs, const struct opengl_driver_funcs **driver_funcs );
  
  
-@@ -62,6 +61,7 @@ extern UINT ANDROID_OpenGLInit( UINT version, const struct opengl_funcs *opengl_
-  */
- 
- extern void start_android_device(void);
-+extern void ANDROID_InitDevice(void);
- extern void register_native_window( HWND hwnd, struct ANativeWindow *win, BOOL client );
- extern struct ANativeWindow *create_ioctl_window( HWND hwnd, BOOL opengl, float scale );
- extern struct ANativeWindow *grab_ioctl_window( struct ANativeWindow *window );
-@@ -95,7 +95,7 @@ extern UINT ANDROID_ShowWindow( HWND hwnd, INT cmd, RECT *rect, UINT swp );
+@@ -95,7 +94,7 @@ extern UINT ANDROID_ShowWindow( HWND hwnd, INT cmd, RECT *rect, UINT swp );
  extern LRESULT ANDROID_WindowMessage( HWND hwnd, UINT msg, WPARAM wp, LPARAM lp );
  extern BOOL ANDROID_WindowPosChanging( HWND hwnd, UINT swp_flags, BOOL shaped, const struct window_rects *rects );
  extern BOOL ANDROID_CreateWindowSurface( HWND hwnd, BOOL layered, const RECT *surface_rect, struct window_surface **surface );
@@ -73,16 +65,7 @@ diff --git a/dlls/wineandroid.drv/opengl.c b/dlls/wineandroid.drv/opengl.c
 diff --git a/dlls/wineandroid.drv/init.c b/dlls/wineandroid.drv/init.c
 --- a/dlls/wineandroid.drv/init.c
 +++ b/dlls/wineandroid.drv/init.c
-@@ -515,6 +515,8 @@ JavaVM **p_java_vm = NULL;
- jobject *p_java_object = NULL;
- unsigned short *p_java_gdt_sel = NULL;
- 
-+extern void ANDROID_InitDevice(void);
-+
- static HRESULT android_init( void *arg )
- {
-     struct init_params *params = arg;
-@@ -525,7 +527,18 @@ static HRESULT android_init( void *arg )
+@@ -525,7 +525,18 @@ static HRESULT android_init( void *arg )
      JavaVM *java_vm;
      void *ntdll;
  
@@ -102,24 +85,13 @@ diff --git a/dlls/wineandroid.drv/init.c b/dlls/wineandroid.drv/init.c
  
      p_java_vm = dlsym( ntdll, "java_vm" );
      p_java_object = dlsym( ntdll, "java_object" );
-@@ -537,7 +550,6 @@ static HRESULT android_init( void *arg )
+@@ -537,7 +548,6 @@ static HRESULT android_init( void *arg )
  
      pthread_mutexattr_init( &attr );
      pthread_mutexattr_settype( &attr, PTHREAD_MUTEX_RECURSIVE );
 -    pthread_mutex_init( &drawable_mutex, &attr );
      pthread_mutex_init( &win_data_mutex, &attr );
      pthread_mutexattr_destroy( &attr );
- 
-@@ -561,6 +573,10 @@ static HRESULT android_init( void *arg )
- #endif
-     }
-     __wine_set_user_driver( &android_drv_funcs, WINE_GDI_DRIVER_VERSION );
-+    /* 尽早把设备线程与 Java 桌面视图起来：Java 报来的屏幕尺寸要赶在主程序建窗之前
-+     * 被 init_monitors() 采用，否则窗口会以 0 尺寸建出来（真机实测窗口高度 0、屏幕全黑）。
-+     * 放在这里（驱动初始化）比上游"首个窗口时才起"更早。 */
-+    ANDROID_InitDevice();
-     return STATUS_SUCCESS;
- }
  
 
 diff --git a/dlls/wineandroid.drv/window.c b/dlls/wineandroid.drv/window.c
@@ -147,23 +119,7 @@ diff --git a/dlls/wineandroid.drv/window.c b/dlls/wineandroid.drv/window.c
  
      for (;;)
      {
-@@ -953,6 +957,15 @@ LRESULT ANDROID_DesktopWindowProc( HWND hwnd, UINT msg, WPARAM wp, LPARAM lp )
- /***********************************************************************
-  *           ANDROID_ProcessEvents
-  */
-+void ANDROID_InitDevice(void)
-+{
-+    if (desktop_tid) return;   /* 幂等 */
-+    /* 设备线程 + Java 桌面视图要尽早起来：这样 Java 报来的屏幕尺寸能在主程序建窗之前
-+     * 被 init_monitors() 采用。否则窗口会以 0 尺寸建出来（真机实测：窗口高度 0、屏幕全黑）。 */
-+    init_event_queue();
-+    start_android_device();
-+}
-+
- BOOL ANDROID_ProcessEvents( DWORD mask )
- {
-     if (GetCurrentThreadId() == desktop_tid)
-@@ -971,12 +984,21 @@ BOOL ANDROID_CreateWindow( HWND hwnd )
+@@ -971,12 +975,21 @@ BOOL ANDROID_CreateWindow( HWND hwnd )
  {
      TRACE( "%p\n", hwnd );
  
@@ -187,7 +143,7 @@ diff --git a/dlls/wineandroid.drv/window.c b/dlls/wineandroid.drv/window.c
          if (!(data = alloc_win_data( hwnd ))) return FALSE;
          release_win_data( data );
      }
-@@ -1240,6 +1262,15 @@ BOOL has_client_surface( HWND hwnd )
+@@ -1240,6 +1253,15 @@ BOOL has_client_surface( HWND hwnd )
   */
  BOOL ANDROID_CreateDesktop( const WCHAR *name, UINT width, UINT height )
  {
@@ -203,7 +159,7 @@ diff --git a/dlls/wineandroid.drv/window.c b/dlls/wineandroid.drv/window.c
      /* wait until we receive the surface changed event */
      while (!screen_width)
      {
-@@ -1250,5 +1281,7 @@ BOOL ANDROID_CreateDesktop( const WCHAR *name, UINT width, UINT height )
+@@ -1250,5 +1272,7 @@ BOOL ANDROID_CreateDesktop( const WCHAR *name, UINT width, UINT height )
          }
          process_events( QS_ALLINPUT );
      }

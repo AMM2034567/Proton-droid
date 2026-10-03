@@ -1043,6 +1043,13 @@ public class WineActivity extends Activity
 
     public void createDesktopWindow( final int hwnd )
     {
+        try
+        {
+            android.util.DisplayMetrics dm = getResources().getDisplayMetrics();
+            Log.i( LOGTAG, "sync report desktop size " + dm.widthPixels + "x" + dm.heightPixels );
+            wine_desktop_changed( dm.widthPixels, dm.heightPixels );
+        }
+        catch (Throwable t) { Log.w( LOGTAG, "sync report failed: " + t ); }
         runOnUiThread( new Runnable() { public void run() { create_desktop_window( hwnd ); }} );
     }
 
