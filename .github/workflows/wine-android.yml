@@ -6,9 +6,9 @@ on:
   workflow_dispatch:
     inputs:
       wine_ref:
-        description: 'wine 源码 ref（tag 或分支）'
+        description: 'wine 源码 ref（tag 或分支）。master = 含上游分离进程改造的新模型（不打本地补丁）；wine-11.0 = 旧基线（打本地补丁）'
         required: false
-        default: 'wine-11.0'
+        default: 'master'
       api_level:
         description: 'Android API level（NDK 目标）'
         required: false

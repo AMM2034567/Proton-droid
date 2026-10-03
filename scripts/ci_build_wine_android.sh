@@ -49,10 +49,20 @@ else
 fi
 cd "$SRC" && git log --oneline -1
 
-log "1.5/5 给 wine 打本地补丁（wineandroid.drv 与 wine-11.0 内部接口漂移）"
-# wineandroid.drv 在上游多年无人编译，接口已与 wine-11.0 漂移（详见记忆 §16.6 与补丁注释）。
-# 幂等：先把它复位到 pristine（缓存恢复的源码树可能已经打过补丁），再逐个 apply。
-if ls "$PATCH_DIR"/*.patch >/dev/null 2>&1; then
+log "1.5/5 给 wine 打本地补丁（仅 wine-11.0 基线；master 已含上游分离进程改造，不再打补丁）"
+# 说明：我们的补丁是为了把 wineandroid.drv 从"多年无人编译"的状态救活（详见记忆 §16.6/§16.15）。
+# 上游从 wine 11.6 起在复活该驱动，MR !10569（已合并）把它改成**分离进程模型**，
+# 并修了 loader 路径/APK 内库查找/64 位 JNI 崩溃等 => 新基线上这些补丁要么已过时、要么会冲突。
+# 因此：只有 wine-11.0 基线才打补丁；其它 ref（master/新 tag）默认不打，可用 FORCE_PATCHES=1 强制。
+APPLY_PATCHES="${APPLY_PATCHES:-}"
+if [ -z "$APPLY_PATCHES" ]; then
+  case "$WINE_REF" in
+    wine-11.0|wine-11.0*) APPLY_PATCHES=1 ;;
+    *) APPLY_PATCHES=0 ;;
+  esac
+fi
+log "   基线 $WINE_REF => APPLY_PATCHES=$APPLY_PATCHES"
+if [ "$APPLY_PATCHES" = "1" ] && ls "$PATCH_DIR"/*.patch >/dev/null 2>&1; then
   # ⚠️ 只复位 dlls/wineandroid.drv/，**不要** `git checkout -- dlls/`：
   # 缓存恢复后工作区的 stat 与 git index 失配，整目录 checkout 会把 dlls/ 下所有源文件按新 mtime 重写，
   # make 就会重编 3000+ 个文件（run #10 实测：host 阶段 3159 个编译命令、白花 15 分钟）。
