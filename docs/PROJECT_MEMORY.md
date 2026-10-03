@@ -1345,3 +1345,33 @@ adb shell am force-stop com.protondroid && am start -n …WineActivity
 run-as cat files/log                                                        # wine 的 ERR/WARN 都在这
 ```
 APK 侧改动（Java）不需要 CI，本地 `assembleDebug` + `adb install -r` 即可（3~8 秒）。
+
+### 16.11 注册表路线已被证实可用（`+reg` trace 铁证），但有别的东西还在跑 explorer 桌面代码
+
+`WINEDEBUG=+reg,+driver` 的真机 trace（`cache/wine-log16.txt`）：
+```
+0044:trace:reg:NtOpenKeyEx (0x0,L"\Registry\Machine\System\CurrentControlSet\Control\Video\{00000000-0000-0000-0000-000000000000}\0000",...)
+0044:trace:reg:NtQueryValueKey (0x44,L"GraphicsDriver",2,...)          ← 读到了我们写的值
+0044:trace:driver:load_desktop_driver trying driver L"wineandroid.drv\0000"   ← \0000 只是调试打印的 NUL
+0044:warn:module:load_dll Failed to load module L"winemac.drv" …
+0044:warn:module:load_dll Failed to load module L"winex11.drv" …
+0044:warn:module:load_dll Failed to load module L"winewayland.drv" …
+0044:trace:reg:NtSetValueKey (0x50,L"DriverError",…)
+0024:err:winediag:nodrv_CreateWindow L"The graphics driver is missing. Check your build!"
+```
+结论：
+1. **注册表这条路是通的**（`ensure_android_driver_registry()` 写的全零 GUID 键被 win32u 正确读到）✓
+2. `wineandroid.drv` 被点名后**加载失败**，随后回落 mac/x11/wayland 默认列表，并写入 `DriverError`
+   —— 写 `DriverError` 的只有 `programs/explorer/desktop.c:1066` ⇒ **还有 explorer 的桌面代码在跑**
+   （残留的进程或前缀里的 Explorer 桌面设置），它那侧没有 JVM ⇒ 加载失败并把错误写进注册表。
+3. 之后清空 `files/prefix-android` 重跑，暴露另一个问题：
+   `wine: '…/prefix-android' is a 64-bit installation, it cannot be used with a 32-bit wineserver.`
+   （清空前缀后第 1 次 wineboot 建好、第 2 次启动时报的；可能是上一次残留的 wineserver 未退干净）
+
+**下一步（按优先级）**：
+1. 确保 wine 进程/wineserver 全部退干净再重跑（`am force-stop` 之后确认 `pidof wineserver` 为空），
+   看清空前缀后第 3 次启动是否还报 arch 不匹配；
+2. 确认没有任何 explorer 桌面路径被触发：`+reg` 里若再出现 `DriverError` + mac/x11/wayland 列表，
+   就查是谁调用的（前缀里 `HKCU\Software\Wine\Explorer\Desktop(s)` 残留值）；
+3. 补丁 v10（`dlls/win32u/driver.c`：win32u 在"键打不开/没值"时**直接兜底 wineandroid.drv**）已在本地提交
+   `611db2d`，等网络恢复由后台任务 `pwsh-206` 推送并构建 —— 它会绕过注册表这一环。
