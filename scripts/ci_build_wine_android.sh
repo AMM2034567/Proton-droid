@@ -42,16 +42,17 @@ mkdir -p "$HOSTBUILD" && cd "$HOSTBUILD"
 # 否则会因缺 32 位 X 开发包直接 configure: error（首轮 CI 就栽在这里）。
 HOST_MINIMAL_OPTS=(
   --without-x --without-freetype --without-alsa --without-pulse --without-oss
-  --without-coreaudio --without-cups --without-dbus --without-gnutls --without-ldap
+  --without-coreaudio --without-cups --without-dbus --without-gnutls
   --without-sane --without-usb --without-v4l2 --without-pcsclite --without-netapi
   --without-krb5 --without-gstreamer --without-opencl
 )
 if [ ! -f config.status ]; then
   "$SRC/configure" "${HOST_MINIMAL_OPTS[@]}" 2>&1 | tee "$OUT/configure-host.log" | tail -20
 fi
-# 只构建 host 侧工具即可
-make -j"$JOBS" tools/winebuild/winebuild tools/widl/widl tools/winegcc/winegcc tools/wmc/wmc tools/wrc/wrc 2>&1 | tail -5
-ls -l tools/winebuild/winebuild tools/widl/widl 2>/dev/null || true
+# 目标侧 build 需要 host 侧的 tools/wine/wine（"No rule to make target .../build-host/tools/wine/wine"），
+# 所以这里直接做一次**完整 host 构建**，别只挑几个工具。
+make -j"$JOBS" 2>&1 | tee "$OUT/make-host.log" | tail -10
+ls -l tools/wine/wine tools/winebuild/winebuild tools/widl/widl 2>/dev/null || true
 
 log "3/5 交叉配置 aarch64-linux-android"
 export CC="$TOOLCHAIN/bin/aarch64-linux-android${ANDROID_API}-clang"
@@ -73,7 +74,7 @@ if [ ! -f config.status ]; then
     --without-x \
     --without-freetype \
     --without-alsa --without-pulse --without-oss --without-coreaudio \
-    --without-cups --without-dbus --without-gnutls --without-ldap \
+    --without-cups --without-dbus --without-gnutls \
     --without-sane --without-usb --without-v4l2 --without-pcsclite \
     --without-netapi --without-krb5 --without-gstreamer --without-opencl \
     2>&1 | tee "$OUT/configure-android.log" | tail -40
