@@ -1116,13 +1116,10 @@ E6 去掉虚拟桌面包装，直接 `wine dxvk_probe.exe`。
 | #7 | 2m00s | ❌ host 侧 clang ICE **搬到 x86_64-windows PE**：`dlls/msvcp100/x86_64-windows/{ios,locale}.o`（wine msvcp90 的内联汇编 RTTI `@__asm_dummy_..._rtti` 把 clang 18.1.3 的 X86 Assembly Printer 搞崩） | `--enable-archs=x86_64` 只挡住 i386，挡不住 x86_64。根因：wine-11.0 `configure.ac` 的 PE 编译器是**自动探测**——`x86_64-w64-mingw32-gcc` → `amd64-w64-mingw32-gcc` → `…-clang` → `clang`（`--enable-sast` 才会默认 clang），我们没装 mingw ⇒ 落到 `/usr/bin/clang` 18.1.3 ⇒ ICE。修法：workflow 里 apt 装 **`gcc-mingw-w64-x86-64`**，脚本顶部也打印选中的 PE 编译器作为证据。附：host 工具守卫按预期生效（`!! host 工具缺失: tools/wine/wine` → exit 1），run #7 的 artifact 只有 23KB（纯日志，无 tar，符合预期） |
 
 | #9 | 39m27s | ❌ 目标侧 `opengl.c:81` 调用 `set_window_opengl_drawable` 未声明 | **host 侧首次全绿**（`host make 退出码: 0`，mingw 修好了 clang ICE；host 全新 configure 到 make 完成约 17 分钟）→ 3/5 交叉 configure ✓ → 4/5 目标编译 9 分钟后崩。根因：`set_window_opengl_drawable()` 在 wine-11.0 里是 **`dlls/win32u/opengl.c` 的 static 函数**（驱动不可见；master 才挪到 `include/wine/opengl_driver.h`，所以代码搜索会误导），而 winex11 在 11.0 里也已无 `update_gl_drawable`（缓存 drawable 由 win32u 自己维护）。且 wineandroid 的 `update_gl_drawable()` **在驱动内零调用者**（纯死代码）⇒ 修法：函数体只留 `NtUserRedrawWindow(...)`，删掉两行不可见的调用。**已验证**：`android.h`/`dllmain.c`/`opengl.c` 三个文件之外，驱动的 `device.o`/`init.o`/`keyboard.o`/`window.o` 都编过了 ⇒ 补丁后应能编完整个驱动。缓存：run #9 的 save 步骤成功，`build-android` 部分产物已入缓存 ⇒ run #10 是增量 |
-| #10 | 运行中 | 补丁 v2（3 处漂移）| 预期：增量编译 → 链接 → `make install` → 安装树产物 |
 
 | #10 | 33m58s | ❌ **链接** `wineandroid.so` 时 `undefined symbol: drawable_mutex`（**驱动所有 .o 都编过了**） | `drawable_mutex` 是旧 wine 由 win32u 导出的全局锁，11.0 里已删；而驱动里**只声明（`android.h:56`）+ 初始化（`init.c:540`）、从不上锁** ⇒ 补丁 v3 删掉这两行。**另一个大发现：host 阶段白花 15 分钟**——`git checkout -- dlls/` 在缓存恢复后（工作区 stat 与 git index 失配）把 `dlls/` 全部源文件按新 mtime 重写 ⇒ make **重编 3159 个文件**（日志实测）。已改成只重置 `dlls/wineandroid.drv/` ⇒ 下一轮 host 应变成秒级。信号：缓存确实生效（`Cache restored from key: …run3711059…`，`PE 编译器: x86_64-w64-mingw32-gcc (GCC) 13-win32`、`已存在，复用` 都出现在日志里） |
-| #11 | 运行中 | 补丁 v3（4 文件漂移）+ 只重置驱动目录 | 预期：host 增量（分钟级）→ 目标编译补完 → 链接 → `make install` → 安装树 |
 
 | #11 | 3m9s | ⚠️ **C1 产物首次产出**（install tar **175MB** + build tar 183MB）但顶层判失败 | ① `host make 退出码: 0` 只花 **3 秒**（checkout 修复生效：上一轮同一步是 15 分钟 / 3159 个文件）；② 目标 `make` 13 秒后挂在 gradle/APK 规则，**但 `make install 退出码: 0`** ⇒ 安装树已产出（`wine-android-arm64-install.tar.gz`）；③ APK 规则失败真因：Makefile 的 `mv` 取 `build/outputs/apk/wine-debug.apk`（**没有 `debug/` 子目录**），我的 stub 建到了 `debug/` 下 ⇒ 已修 stub 路径；④ artifact 名 `wine-android-build`（351MB）已可下载核验 |
-| #12 | 运行中 | stub 路径修复 | 目标：`make` 也 rc=0 ⇒ 整轮全绿，C1 正式收口 |
 
 | #12 | 2m47s | ✅ **全绿（C1 完成）** | stub 路径修好后 `make` 也 rc=0；`make install` rc=0。日志可见增量效果：`make-host.log` 只有 64 字节（host make 3 秒）、`make-android.log` 16KB。artifact = `wine-android-build`（351MB：install tar 174MB + build tar 183MB + 三个 log）。**C1 验收判据（已逐项核验）**：install tar 2574 条目，`arm64-v8a/bin/wineserver`、`aarch64-unix/{ntdll,win32u,wineandroid,winevulkan}.so`、`aarch64-windows/{wineandroid.drv,ntdll.dll,kernel32.dll}`、`share/wine/wine.inf` 全部存在 |
 
@@ -1142,4 +1139,35 @@ configure 结束那一行，看起来像卡死（实际步骤计时器在走）�
 再套 `stdbuf -oL -eL` 让 make/tee 行缓冲，日志才会真正逐行滚动。REST API
 （`gh api .../jobs/<id>/logs`）在步骤结束前一律 404 `BlobNotFound`，只有网页版能实时看。
 
+### 16.8 C2 接入进度（2026-10-04）
 
+**C 方案载荷已发布**：GitHub Release **`wine-android-11.0-r1`**（资产
+`wine-android-arm64-11.0-r1-install.tar.gz`，174MB，来自 C1 的 run #12）；
+URL 常量 = `WineAndroidPayload.URL_PAYLOAD`。
+
+**App 侧新增/改动**：
+1. `app/src/main/java/org/winehq/wine/WineActivity.java`（**917 行** = 上游 wine-11.0 原样 + 5 处补丁）：
+   ① WINEPREFIX → `prefix-android`（与 glibc 版 Proton 前缀隔离）；② 默认程序 `wineconsole.exe` → `winecfg.exe`；
+   ③ `LD_LIBRARY_PATH` 追加 `<dlldir>/<so_dir>`（aarch64-unix，保证 `ntdll.so` 能 dlopen 同目录 .so）；
+   ④ 支持 intent extra `cmdline`（adb 冒烟测试用）；⑤ `loadWineInternal` 开头调
+   `WineAndroidPayload.ensureInstalled(this)`。**包名必须保持 `org.winehq.wine`**（`ntdll.so` 里
+   `WINE_JAVA_CLASS` 硬编码）。生成脚本（改补丁后重跑）：`.session-recovery/gen-wineactivity.mjs`（临时工具，未入库）。
+2. `app/src/main/java/com/protondroid/runtime/WineAndroidPayload.kt`：从 Release（或
+   `/sdcard/Download/ProtonDroid/` 公共目录）取 tar.gz，纯 Java 解包（GZIP + 自写 tar reader，
+   支持 GNU 长名 `L` 与 PAX 头跳过），解到 `filesDir/{arm64-v8a,share,include}`，给 `arm64-v8a/bin/*`
+   补执行位，写 `.wine-android-payload.ok` marker。
+   **为什么不塞 APK assets**：上游 `copyAssetFiles()` 在缺 `sums.sum` 时直接 return
+   （`readMapFromAssetFile` 捕获 IOException 返回空 Map）⇒ 自管载荷完全兼容，APK 不必胖 400MB。
+3. `AndroidManifest.xml`：注册 `org.winehq.wine.WineActivity`（`exported="true"` 仅 C2 冒烟测试用，
+   接好入口后改回 false）。**绝不能设 `android:process`** —— wine 必须与 UI 同进程。
+
+**真机冒烟测试（设备连上后）**：
+```
+adb install -r <CI 出的 APK>
+adb push wine-android-arm64-11.0-r1-install.tar.gz /sdcard/Download/ProtonDroid/
+adb shell am start -n com.protondroid/org.winehq.wine.WineActivity --es cmdline 'c:\windows\system32\winecfg.exe'
+adb logcat -s WineAndroidPayload:* wine:* DEBUG:*
+```
+**验收判据（§16.7 第 6 条）**：`System.load(…/aarch64-unix/ntdll.so)` 成功 → logcat 出现
+`desktop_changed: WxH` / `create desktop view` → `onSurfaceTextureAvailable` + `got buffer … fence`；
+**不能出现** `The graphics driver is missing`（drv 加载失败）与 `failed to load gralloc module`（走 bits 回退）。

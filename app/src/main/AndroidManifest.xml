@@ -44,6 +44,17 @@
             android:screenOrientation="sensorLandscape"
             android:theme="@style/Theme.Protondroid.Fullscreen" />
 
+        <!-- C 方案（wineandroid.drv）：Android 原生呈现的 wine，不经过 X 服务器。
+             包名必须保持 org.winehq.wine —— ntdll.so 里 WINE_JAVA_CLASS 硬编码该名称。
+             绝对不要设 android:process：wine 必须与 UI 同进程（wine_init 直接在 Activity 里跑）。
+             exported=true 目前只为 C2 冒烟测试（adb shell am start ... --es cmdline ...），接好游戏入口后改回 false。 -->
+        <activity
+            android:name="org.winehq.wine.WineActivity"
+            android:exported="true"
+            android:launchMode="singleInstance"
+            android:screenOrientation="sensorLandscape"
+            android:configChanges="mcc|mnc|locale|touchscreen|keyboard|keyboardHidden|navigation|screenLayout|fontScale|uiMode|orientation|screenSize|smallestScreenSize" />
+
         <!-- 守护 Windows 游戏进程的最高优先级前台服务 -->
         <service
             android:name=".service.ProtonForegroundService"
