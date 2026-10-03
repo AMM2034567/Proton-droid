@@ -149,6 +149,16 @@ diff --git a/dlls/wineandroid.drv/window.c b/dlls/wineandroid.drv/window.c
      /* wait until we receive the surface changed event */
      while (!screen_width)
      {
+@@ -1250,5 +1266,7 @@ BOOL ANDROID_CreateDesktop( const WCHAR *name, UINT width, UINT height )
+         }
+         process_events( QS_ALLINPUT );
+     }
+-    return 0;
++    /* BOOL 函数：必须返回 TRUE。上游写成 return 0 ⇒ win32u 认为建桌面失败，
++     * explorer 报 "manage_desktop failed to create desktop"，随后一路 nodrv_CreateWindow。 */
++    return TRUE;
+ }
+\ No newline at end of file
 
 diff --git a/dlls/ntdll/unix/loader.c b/dlls/ntdll/unix/loader.c
 --- a/dlls/ntdll/unix/loader.c
