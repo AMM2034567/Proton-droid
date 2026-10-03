@@ -1064,4 +1064,10 @@ E6 去掉虚拟桌面包装，直接 `wine dxvk_probe.exe`。
 ⇒ 改脚本后仍能增量复用 `wine-work/{wine,build-host,build-android}`；脚本里用 `.configure-opts`
 戳保证 configure 选项变化时会重新 configure（避免复用旧 config.status 静默出错）。
 
+**⚠️ 日志可见性（#4 的「CI 卡住」假象，务必别再犯）**：脚本里 `make ... | tee log | tail -10`
+里的 **`tail` 要等管道结束才吐字**，会把整段构建的输出全部憋住 —— 网页/CLI 上只看到日志停在
+configure 结束那一行，看起来像卡死（实际步骤计时器在走）。正确做法：管道只留 `tee`（全量输出），
+再套 `stdbuf -oL -eL` 让 make/tee 行缓冲，日志才会真正逐行滚动。REST API
+（`gh api .../jobs/<id>/logs`）在步骤结束前一律 404 `BlobNotFound`，只有网页版能实时看。
+
 

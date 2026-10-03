@@ -54,14 +54,17 @@ HOST_MINIMAL_OPTS=(
 # 缓存恢复回来的 build 目录可能来自旧版脚本：选项变了就必须重新 configure。
 HOST_OPTS_STR="${HOST_MINIMAL_OPTS[*]}"
 if [ ! -f config.status ] || [ "$(cat .configure-opts 2>/dev/null || true)" != "$HOST_OPTS_STR" ]; then
-  "$SRC/configure" "${HOST_MINIMAL_OPTS[@]}" 2>&1 | tee "$OUT/configure-host.log" | tail -20
+  # 注意：这里**不能**再接 `| tail -N`。tail 要等管道结束才吐字，会把整段构建的输出全部憋住，
+  # 网页/CLI 看到的就只有"卡住不动"（run #4 就是这样：60 多行的日志停在 configure 结束处）。
+  # tee 已经落盘到 $OUT/*.log，控制台全量输出反而更好。
+  stdbuf -oL -eL "$SRC/configure" "${HOST_MINIMAL_OPTS[@]}" 2>&1 | stdbuf -oL -eL tee "$OUT/configure-host.log"
   echo "$HOST_OPTS_STR" > .configure-opts
 fi
 # 目标侧 build 需要 host 侧的 tools/wine/wine（run #2: "No rule to make target .../build-host/tools/wine/wine"），
 # 所以这里必须做**完整 host 构建**，不能只挑几个工具。
 # 但 make 失败不能直接把脚本带走（run #3 就是这样丢掉 3/5、4/5 的全部日志）：先记录退出码。
 set +e
-make -j"$JOBS" 2>&1 | tee "$OUT/make-host.log" | tail -10
+stdbuf -oL -eL make -j"$JOBS" 2>&1 | stdbuf -oL -eL tee "$OUT/make-host.log"
 MAKE_HOST_RC=${PIPESTATUS[0]}
 set -e
 echo "host make 退出码: $MAKE_HOST_RC"
@@ -100,13 +103,13 @@ TGT_OPTS=(
 )
 TGT_OPTS_STR="${TGT_OPTS[*]}"
 if [ ! -f config.status ] || [ "$(cat .configure-opts 2>/dev/null || true)" != "$TGT_OPTS_STR" ]; then
-  "$SRC/configure" "${TGT_OPTS[@]}" 2>&1 | tee "$OUT/configure-android.log" | tail -40
+  stdbuf -oL -eL "$SRC/configure" "${TGT_OPTS[@]}" 2>&1 | stdbuf -oL -eL tee "$OUT/configure-android.log"
   echo "$TGT_OPTS_STR" > .configure-opts
 fi
 
-log "4/5 编译（这一步最久，CI 上约 20~60 分钟）"
+log "4/5 编译（这一步最久，CI 上约 20~60 分钟；日志实时滚动，不再 tail 缓冲）"
 set +e
-make -j"$JOBS" 2>&1 | tee "$OUT/make-android.log" | tail -60
+stdbuf -oL -eL make -j"$JOBS" 2>&1 | stdbuf -oL -eL tee "$OUT/make-android.log"
 MAKE_RC=${PIPESTATUS[0]}
 set -e
 echo "make 退出码: $MAKE_RC"
