@@ -1014,9 +1014,14 @@ E6 去掉虚拟桌面包装，直接 `wine dxvk_probe.exe`。
 ### 16.2 里程碑与验收
 
 - **C0 ✅（已完成）侦察**：确认上游 `wineandroid.drv` + `configure.ac` Android 支持 + Java 契约。
-- **C1 🚧 构建管线**（本次落地）：CI（`ubuntu-latest` + NDK 27 + gradle 8.7）跑
-  `scripts/ci_build_wine_android.sh`，产出 aarch64-android wine 树（+ 若可能，wine 自带 APK）。
-  验收：configure 通过 + `make` 成功 + artifact 里能取到 `lib/wine/aarch64-unix/wine` 等产物。
+- **C1 ✅（2026-10-04 完成）构建管线**：CI（`ubuntu-latest` + NDK 27 + mingw-w64 + gradle 8.7）跑
+  `scripts/ci_build_wine_android.sh`，**run #12（37115660926）全绿**（2m47s，增量）。
+  验收（已核验 run #11/#12 的 artifact `wine-android-build`）：安装树 `wine-android-arm64-install.tar.gz`
+  （174MB，2574 个条目）含 `arm64-v8a/bin/wineserver`、
+  `lib/wine/aarch64-unix/{ntdll,win32u,wineandroid,winevulkan,...}.so`、
+  `lib/wine/aarch64-windows/{wineandroid.drv,ntdll.dll,kernel32.dll,...}`、`share/wine/**`；
+  另附 build 树 tar（183MB，排查用）。**产物落本机**：`D:\cargoproject\Proton-droid\.cache-gh\wine-android-build.zip`
+  （解包后的两个 tar 在 `cache\run12\`）。
 - **C2 最小可运行**：在我们 App 里跑起 Android wine，让其窗口/表面在 `SurfaceView` 上出画
   （先用 wine 内建程序，如 `winecfg`/`notepad`/`explorer`）。
 - **C3 Vulkan/DXVK**：让 winevulkan 用 `VK_KHR_android_surface` 对 ANativeWindow 呈现，DXVK 出画。
@@ -1118,6 +1123,8 @@ E6 去掉虚拟桌面包装，直接 `wine dxvk_probe.exe`。
 
 | #11 | 3m9s | ⚠️ **C1 产物首次产出**（install tar **175MB** + build tar 183MB）但顶层判失败 | ① `host make 退出码: 0` 只花 **3 秒**（checkout 修复生效：上一轮同一步是 15 分钟 / 3159 个文件）；② 目标 `make` 13 秒后挂在 gradle/APK 规则，**但 `make install 退出码: 0`** ⇒ 安装树已产出（`wine-android-arm64-install.tar.gz`）；③ APK 规则失败真因：Makefile 的 `mv` 取 `build/outputs/apk/wine-debug.apk`（**没有 `debug/` 子目录**），我的 stub 建到了 `debug/` 下 ⇒ 已修 stub 路径；④ artifact 名 `wine-android-build`（351MB）已可下载核验 |
 | #12 | 运行中 | stub 路径修复 | 目标：`make` 也 rc=0 ⇒ 整轮全绿，C1 正式收口 |
+
+| #12 | 2m47s | ✅ **全绿（C1 完成）** | stub 路径修好后 `make` 也 rc=0；`make install` rc=0。日志可见增量效果：`make-host.log` 只有 64 字节（host make 3 秒）、`make-android.log` 16KB。artifact = `wine-android-build`（351MB：install tar 174MB + build tar 183MB + 三个 log）。**C1 验收判据（已逐项核验）**：install tar 2574 条目，`arm64-v8a/bin/wineserver`、`aarch64-unix/{ntdll,win32u,wineandroid,winevulkan}.so`、`aarch64-windows/{wineandroid.drv,ntdll.dll,kernel32.dll}`、`share/wine/wine.inf` 全部存在 |
 
 **CI 用法**：`gh workflow run "wine-android.yml" -f wine_ref=wine-11.0 -f api_level=28 --ref main`；
 日志 `gh run view <id> --log > cache\ci-wine-N.log`；产物 artifact = `wine-android-build`
