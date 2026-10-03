@@ -1252,3 +1252,24 @@ dlls/wineandroid.drv/window.c:527: int wait_events(int):
 + `aarch64-windows/wineandroid.drv`）⇒ `adb push` 到 `/data/local/tmp` ⇒
 `run-as … sh -c 'cd files/arm64-v8a/lib/wine && tar xzf …'`（设备自带 `/system/bin/tar`）⇒ 重跑。
 一轮约 5 分钟，不用重推 174MB 载荷。
+
+#### 16.9.2 断点与一键续跑（手机暂时断开前的状态，2026-10-04 19:50）
+
+**已完成**：补丁 v6（6 个文件）已推送并触发 CI 构建；`cache\c2-retest.ps1` 已备好
+（推增量包 → 设备端 tar 就地覆盖 → 拉起 WineActivity → 打印进程/窗口/wine 日志判据 → 截图）。
+
+**手机插回后的续跑步骤**（一条命令）：
+```powershell
+# 1) 取最近一次 wine CI 的增量包（约 7MB，比 351MB 全量包快得多）
+gh run download <runId> -n wine-android-delta -D cache\delta
+# 2) 一键验证（默认用 cache\delta\wine-delta.tar.gz）
+pwsh -File cache\c2-retest.ps1
+```
+判据（脚本会打印）：
+- 进程存活（不再闪退）；
+- `files/log` 里出现 `wait_events on thread …` 的 **WARN**（而不是 assertion abort）⇒ 补丁 v6 生效；
+- 之后应是 `ANDROID_CreateDesktop` 等到 `screen_width`（由 Java `wine_desktop_changed` 送来）而返回，
+  进而出现窗口创建痕迹；截图里应能看到虚拟桌面/`winecfg` 窗口。
+
+**若仍失败**：`cache\wine-log-latest.txt` 是完整的 wine stderr（`err+all,warn+all,fixme+all`），
+按里面的第一处 `err:` 继续定位——注意 wine 的 ERR/WARN 日志都在这个文件里，logcat 里看不到。
