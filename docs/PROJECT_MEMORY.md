@@ -1467,3 +1467,30 @@ wine: 0024:trace:android:process_events CONFIG_CHANGED dpi 480
 2. 驱动侧 `+android` 里 `create_ioctl_window` 之后是否卡在等 Java 的 ioctl 返回（device.c 的 app_ioctl 往返）；
 3. 若窗口没建：查 `winecfg.exe`（主程序）为何停在窗口创建前——可以临时把主程序换成更简单的
    `notepad.exe`/`winemine.exe` 看是否出画面，以区分"驱动渲染问题"还是"winecfg 自身问题"。
+
+### 16.14.1 黑屏的直接原因：窗口矩形是垃圾值（监视器几何没建立）
+
+`cache/wine-log28.txt` 统计（`ANDROID_WindowPosChanging` 的窗口矩形）：
+```
+0x0                出现 84 次
+31785845x31785532  出现  9 次     ← 明显是未初始化内存
+6357209x6357112    出现  2 次
+0x121 / 4x948 / 0x8 …               ← 都不是正常窗口尺寸
+```
+- Java 侧窗口**确实在建**：`create hwnd 00010020` 之类 ✓；驱动侧 `create_ioctl_window … opengl=0` 一大串 ✓
+- 尺寸事件**确实在送达并被处理**（`DESKTOP_CHANGED 2294x1032`、`CONFIG_CHANGED dpi 480` 多次）✓
+- 但**这些窗口是在尺寸到达之前创建的**（矩形全是垃圾/0），之后日志停在第 817 行、进程仍活着
+  ⇒ 主线程已无事可做/在等待，而可见窗口（winecfg）没有被正确创建/定位
+- 屏幕因此是 TopView 的黑屏（进度框已 dismiss ⇒ 视图链路是通的）
+
+**结论**：现在是"**时序 + 监视器几何**"问题，不是渲染/驱动问题。
+
+**下一步（按性价比排序）**：
+1. **让驱动在建窗之前就拿到尺寸**：把 Java 的上报时机提前到 `wine_init` 之前（在主线程里先调一次
+   `wine_desktop_changed`），或在驱动侧让 `ANDROID_CreateDesktop`/`ANDROID_CreateWindow` 等到尺寸就绪
+   （现在是"先建窗、后知道尺寸"）；
+2. **确认监视器几何真的建立了**：给 `ANDROID_UpdateDisplayDevices`（device.c）加 TRACE，
+   看 `init_monitors(width,height)` 是否被调用、`screen_width/height` 是否被采用
+   （垃圾矩形强烈暗示 monitor info 从未初始化）；
+3. **换一个更简单的主程序**（`notepad.exe` / `winemine.exe`）验证"驱动能否画出任何窗口"，
+   把"驱动渲染问题"与"winecfg 自身问题"分开。
