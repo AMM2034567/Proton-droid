@@ -402,7 +402,25 @@ git -c credential.helper= -c http.proxy=http://127.0.0.1:10809 `
    e. 已知限制：**没有合成器（compositor）**，透明/分层窗口按不透明呈现
       （GooseDesktop 的透明覆盖窗显示为白/蓝块）；音频 `mmdevapi` 无后端
       （`pulse,alsa,oss,coreaudio` 全部加载失败）→ 归入 P3。
-7. ⬜ 记录性能基线（帧率、CPU/GPU 占用），作为 C 方案的对比依据。
+7. ✅ **性能基线（2026-10-04 首次测量，探针已固化）** —— 结论：**低帧率不是显示层造成的**。
+   探针：`cache/xfps_probe.py` + `cache/run_xfps.sh`（guest 内 python3 + ctypes 打 libX11，
+   `XFillRectangle` 整窗填充 + 每帧 `XSync`，含客户端往返）。
+   实测（内嵌 libXlorie，X 屏 2288x1080）：
+
+   | 窗口尺寸 | 帧率 | 吞吐 |
+   | --- | --- | --- |
+   | 320x180 | 597 fps | 34 Mpx/s |
+   | 1280x720（wine 桌面尺寸） | **287 fps** | 264 Mpx/s |
+   | 2288x1080（满屏） | **119 fps** | 295 Mpx/s |
+
+   注意：该测量本身是在 guest 里经 proot（ptrace 拦截）发出的，所以**服务端真实上限还要更高**；
+   吞吐随像素线性 → 呈现路径是像素受限（CPU 光栅化 + 零拷贝 AHardwareBuffer 呈现），不是同步/唤醒受限。
+   同刻对照：App 进程（X 服务器 + EGL 合成）各线程 **~3% CPU**；`GooseDesktop.exe` **36.6%**；
+   `proot` **55.1%**（ptrace 税）→ 当时 3~5 FPS 的瓶颈在 **guest 执行栈（wine/FEX/mono + proot）**，
+   而不是显示层。
+   **推论**：B 方案下 2D/桌面类负载很宽裕；3D 游戏的帧率上限由 FEX 执行开销与「呈现拷贝」决定，
+   性能优化的两个大头是 ①减少 proot 的 ptrace 开销（syscall 密集进程可达 50%+ CPU），
+   ②C 方案（wineandroid.drv）的零拷贝直出。**Vulkan WSI 桥解决的是「能不能跑」，不是「跑多快」。**
    **下一批要做的**：**Vulkan WSI 桥 —— 方案已完整落在 §14（规划完成、未动工，含 ICD 候选、
    presenter 选择、W0/W1/W2 分阶段与验收标准）**；其余：osu! 更新器绕过、音频后端、
    将 libgnutls/libgcrypt × DNS 等环境修复固化进 rootfs 打包脚本。
@@ -570,6 +588,10 @@ B 方案把 X11 显示链路打通了（§8.2），但 **D3D→Vulkan 的呈现�
 | guest `/usr/lib/aarch64-linux-gnu/libvulkan.so.1`（1.4.309） | Mesa Vulkan loader（glibc） | ✅ |
 | guest `/usr/share/vulkan/icd.d/` | `lvp`(**lavapipe**) `freedreno` `broadcom` `gfxstream` `nouveau` … | ✅ 现成可用 |
 | guest 内嵌 X 服务器扩展（`xdpyinfo -display :0`） | **MIT-SHM、DRI3、Present**、Composite、DAMAGE、DOUBLE-BUFFER、GLX、RANDR、SYNC、XFIXES、XInputExtension、XKEYBOARD…（共 23 个） | ✅ presenter 有落点 |
+
+呈现预算（实测，§11 P0-7）：满屏 2288x1080 ≈ **119 fps**、1280x720 ≈ **287 fps**（≈295 Mpx/s）。
+即 SHM presenter 每帧 ~9.9 MB 的 CPU 拷贝（60 fps ≈ 600 MB/s）相对这个量级**仍有余量，
+present 不是第一瓶颈**；W1 的成败关键在 ICD 能否拿到真 GPU、以及 FEX/proot 的执行开销。
 
 ICD 候选（**开工第一步就是在这张表里做选择**）：
 
