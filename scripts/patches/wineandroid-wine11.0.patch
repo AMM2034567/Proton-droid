@@ -94,6 +94,32 @@ diff --git a/dlls/wineandroid.drv/init.c b/dlls/wineandroid.drv/init.c
      pthread_mutexattr_destroy( &attr );
  
 
+diff --git a/dlls/wineandroid.drv/window.c b/dlls/wineandroid.drv/window.c
+--- a/dlls/wineandroid.drv/window.c
++++ b/dlls/wineandroid.drv/window.c
+@@ -405,7 +405,9 @@ static int process_events( DWORD mask )
+ {
+     struct java_event *event, *next, *previous;
+ 
+-    assert( GetCurrentThreadId() == desktop_tid );
++    if (GetCurrentThreadId() != desktop_tid)
++        WARN( "process_events on thread %04x, desktop thread is %04x\n",
++              (unsigned)GetCurrentThreadId(), (unsigned)desktop_tid );
+ 
+     pull_events();
+ 
+@@ -524,7 +526,9 @@ static int process_events( DWORD mask )
+  */
+ static int wait_events( int timeout )
+ {
+-    assert( GetCurrentThreadId() == desktop_tid );
++    if (GetCurrentThreadId() != desktop_tid)
++        WARN( "wait_events on thread %04x, desktop thread is %04x\n",
++              (unsigned)GetCurrentThreadId(), (unsigned)desktop_tid );
+ 
+     for (;;)
+     {
+
 diff --git a/dlls/ntdll/unix/loader.c b/dlls/ntdll/unix/loader.c
 --- a/dlls/ntdll/unix/loader.c
 +++ b/dlls/ntdll/unix/loader.c

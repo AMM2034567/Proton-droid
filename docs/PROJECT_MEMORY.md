@@ -1227,3 +1227,28 @@ $env:JAVA_HOME="D:\jdk-17.0.20.101-hotspot"
    才会重定向到 `files/log` —— 这是唯一能看到 wine 内部错误的路子（`run-as cat files/log`）。
 6. 调试时用 `adb logcat -s ProtonBridge:V wine:V`；抓全量要先 `adb logcat > file` 持续重定向，
    否则 40 秒后缓冲被系统日志冲掉。
+
+#### 16.9.1 续：导出修复见效，进入驱动自身的线程断言
+
+补丁 v5（显式导出 `java_vm`/`java_object`/`java_gdt_sel`）**真机验证有效**：
+`Initialization of L"wineandroid.drv" failed` 与 `The graphics driver is missing` **都消失了** ——
+驱动第一次真正加载成功。紧接着暴露出上游驱动的第二个问题（还是"从没真跑过"导致的）：
+
+```
+dlls/wineandroid.drv/window.c:527: int wait_events(int):
+    assertion "GetCurrentThreadId() == desktop_tid" failed
+0024:err:seh:NtRaiseException Exception frame is not in stack limits => unable to dispatch exception
+```
+- `desktop_tid` 在 `init_event_queue()`（window.c:368）里记下"当时那个线程"，而 `init_event_queue` 是从
+  `ANDROID_CreateWindow()`（window.c:978，第一次建窗时）调用的；
+- `wait_events`/`process_events` 的调用者 `ANDROID_CreateDesktop()`（window.c:1246）由 win32u 在
+  **另一个线程**上调用 ⇒ 断言直接 abort（assert 在 debug 构建里是 abort）。
+
+**补丁 v6**：把这两处断言降级为 `WARN`（保留诊断信息，流程继续）。理由：事件管道是普通 fd，
+`poll()` 在任何线程都有效；Java→wine 方向是 `write()` 到 pipe，与线程归属无关。
+（上游那套 "wineandroid.drv: experimental bring-up fixes for Android" 补丁系列解决的就是这类问题。）
+
+**C2 迭代姿势（已验证很快）**：CI 产出 `wine-android-delta`（约 7MB，只含 `aarch64-unix/*.so`
++ `aarch64-windows/wineandroid.drv`）⇒ `adb push` 到 `/data/local/tmp` ⇒
+`run-as … sh -c 'cd files/arm64-v8a/lib/wine && tar xzf …'`（设备自带 `/system/bin/tar`）⇒ 重跑。
+一轮约 5 分钟，不用重推 174MB 载荷。
