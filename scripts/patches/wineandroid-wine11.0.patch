@@ -93,3 +93,22 @@ diff --git a/dlls/wineandroid.drv/init.c b/dlls/wineandroid.drv/init.c
      pthread_mutex_init( &win_data_mutex, &attr );
      pthread_mutexattr_destroy( &attr );
  
+
+diff --git a/dlls/ntdll/unix/loader.c b/dlls/ntdll/unix/loader.c
+--- a/dlls/ntdll/unix/loader.c
++++ b/dlls/ntdll/unix/loader.c
+@@ -1932,9 +1932,11 @@ static void start_main_thread(void)
+ #define WINE_JAVA_CLASS "org/winehq/wine/WineActivity"
+ #endif
+ 
+-JavaVM *java_vm = NULL;
+-jobject java_object = 0;
+-unsigned short java_gdt_sel = 0;
++/* These are looked up by dlls/wineandroid.drv with dlsym(ntdll.so), so they must be
++ * exported explicitly: wine builds unix libs with -fvisibility=hidden. */
++__attribute__((visibility("default"))) JavaVM *java_vm = NULL;
++__attribute__((visibility("default"))) jobject java_object = 0;
++__attribute__((visibility("default"))) unsigned short java_gdt_sel = 0;
+ 
+ /* main Wine initialisation */
+ static jstring wine_init_jni( JNIEnv *env, jobject obj, jobjectArray cmdline, jobjectArray environment )
