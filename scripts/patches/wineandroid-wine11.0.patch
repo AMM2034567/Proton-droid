@@ -30,7 +30,15 @@ diff --git a/dlls/wineandroid.drv/android.h b/dlls/wineandroid.drv/android.h
 diff --git a/dlls/wineandroid.drv/dllmain.c b/dlls/wineandroid.drv/dllmain.c
 --- a/dlls/wineandroid.drv/dllmain.c
 +++ b/dlls/wineandroid.drv/dllmain.c
-@@ -120,9 +120,25 @@ BOOL WINAPI DllMain( HINSTANCE inst, DWORD reason, LPVOID reserved )
+@@ -33,6 +33,7 @@ WINE_DEFAULT_DEBUG_CHANNEL(android);
+ 
+ 
+ extern NTSTATUS CDECL wine_ntoskrnl_main_loop( HANDLE stop_event );
++extern void ANDROID_InitDevice(void);
+ static HANDLE stop_event;
+ 
+ 
+@@ -120,9 +121,25 @@ BOOL WINAPI DllMain( HINSTANCE inst, DWORD reason, LPVOID reserved )
      if (reason != DLL_PROCESS_ATTACH) return TRUE;
  
      DisableThreadLibraryCalls( inst );
