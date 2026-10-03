@@ -111,7 +111,14 @@ object XServer {
         }
 
         return try {
-            val instance = CmdEntryPoint(arrayOf(":$DISPLAY", "-ac", "-nolisten", "tcp"))
+            // `-disable-dri3`：Xlorie 的 DRI3 是**单向残缺**的（dri3_screen_info.fds_from_pixmap = FalseNoop，
+            // 且无标准 DRI3Open），而 Mesa 的 X11 Vulkan WSI 一旦看到 DRI3 就会优先走 DRI3 present 路径
+            // → 画面永远到不了服务器（实测：vkcube 正常渲染但窗口全黑、无 damage）。
+            // 关掉 DRI3 后 Mesa 会回落到软件 present（PutImage/SHM），lavapipe 这类 sw 设备即可出画。
+            // 对 GPU ICD + vulkan-wsi-layer(SHM presenter) 这条正路也是必要条件。
+            val instance = CmdEntryPoint(
+                arrayOf(":$DISPLAY", "-ac", "-nolisten", "tcp", "-disable-dri3")
+            )
             if (!instance.startServer()) {
                 Log.e(TAG, "native start() returned false (TMPDIR/XKB_CONFIG_ROOT 是否就绪？)")
                 return false

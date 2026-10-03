@@ -629,21 +629,55 @@ SHM 的代价是每帧一次 CPU 拷贝（2288x1080 ≈ 9.9 MB/帧），AArch64 
 
 ### 14.4 分阶段计划（建议顺序，含验收标准）
 
-**W0 —— 功能基线（成本最低，先做）**
-在 guest 里用 **lavapipe** + Mesa 自带 X11 WSI，把
-`DXVK → Vulkan → X11 surface → 内嵌 X 服务器 → EGL → SurfaceView` 整条链路跑通（哪怕只有几帧）。
-验收：
-1. `DISPLAY=:0 vulkaninfo --summary` 能看到 lavapipe 设备且 **含 `VK_KHR_xcb_surface`**；
-2. DXVK 日志出现设备创建、`Present` 计数增长；
-3. 真机截图出现 3D 画面（不是黑屏/纯色）。
-可调开关：`VK_ICD_FILENAMES`（锁 lavapipe）、`VK_LOADER_DEBUG=all`、`DXVK_LOG_LEVEL=info`、
-必要时 `MESA_VK_WSI_PRESENT_MODE=immediate`；变量都能经 `files/extra_env.txt` 免重编注入。
+**W0 —— 功能基线 ✅ 已完成（2026-10-04，真机验证通过）**
+
+结论：**Vulkan → X11 → 内嵌 X 服务器 → EGL → SurfaceView 整条链路已打通**（用 lavapipe 软件 Vulkan）。
+真机证据（PGZ110）：
+
+```
+# 环境：X 服务器启动参数加 -disable-dri3；VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.json
+$ vkcube                      # 来自 Debian vulkan-tools 1.4.341，已装进 guest /usr/local/bin
+Selected WSI platform: xcb
+Selected GPU 0: llvmpipe (LLVM 19.1.7, 128 bits), type: Cpu
+I/LorieNative: 2   frames in 5.0 seconds =  0.4 FPS     ← vkcube 起来前
+I/LorieNative: 128 frames in 5.0 seconds = 25.6 FPS     ← vkcube 呈现中
+I/LorieNative: 152 frames in 5.0 seconds = 30.4 FPS
+# 窗口树：0x200000 "Vkcube X11" 500x500+100+100  ／ 截图：能看到旋转的 LUNARG 立方体，两帧不同
+```
+
+**决定性发现：内嵌 X 服务器必须禁用 DRI3（`-disable-dri3`）**。原因（源码实证）：
+Xlorie 的 DRI3 是**单向残缺**的 ——
+`static dri3_screen_info_rec lorieDri3Info = { .version = 2, .fds_from_pixmap = FalseNoop, .pixmap_from_fds = loriePixmapFromFds, ... }`
+（**不能**导出自己的 pixmap，也没有标准 DRI3 `open`），而 Mesa 的 X11 Vulkan WSI
+（`src/vulkan/wsi/wsi_common_x11.c`）**只要发现服务器有 DRI3 就会优先走 DRI3 present**
+（`x11_present_to_x11_dri3`）→ present 永远到不了服务器：窗口全黑、零 damage、服务器帧率不涨。
+表现极具迷惑性：vkcube **不报错**（1 秒能跑完 5 帧、长跑吃 119~184% CPU），只是画面不见。
+排除过程（都失败，记录以免重踩）：`MESA_VK_WSI_DEBUG=noshm`（改不了分支走向）、
+`LIBGL_DRI3_DISABLE=1`（那是 GLX 的开关）、`MESA_VK_WSI_PRESENT_MODE=immediate`、
+加 Khronos 验证层（未加载成功）。
+`-disable-dri3` 后 `xdpyinfo` 扩展从 23 降到 22（DRI3 消失，MIT-SHM/Present 仍在）→ Mesa 回落到
+软件 present（PutImage/SHM）→ 立刻出画。
+附加开关（同一段代码里，备用）：`-force-sysvshm`、`-disable-gpu-present`、`-legacy-drawing`。
+
+**对 W1 的直接含义（重要）**：Mesa 的 X11 WSI 对**非 sw 设备**（真 GPU ICD）强制要求 DRI3
+（`wsi_x11_check_for_dri3()`，sw 设备才豁免）⇒ 真 GPU 在 Mesa 路径下**两条路都不通**：
+有 DRI3 → present 残缺；无 DRI3 → Mesa 直接判定不支持 present。
+所以 **vulkan-wsi-layer（自带 presenter，不依赖 DRI3）或 C 方案是 GPU 路径的必需品**，
+不是「可选优化」。
 
 **W1 —— 真 GPU 的 WSI 桥（主攻）**
 1. 先按 §14.2 定 ICD 来源（优先「ARM DDK glibc libmali」，否则评估 bionic 桥）；
 2. `VK_ICD_FILENAMES=<icd.json>` 指定后，用 `vulkaninfo` 确认设备枚举与扩展面；
 3. ICD 缺 X11 WSI → 编译并装 **vulkan-wsi-layer（SHM presenter）**；ICD 自带 X11 WSI → 直接跳过层；
-4. 验收：`vulkaninfo` 列出 Mali 设备 + `VK_KHR_xcb_surface`；DXVK 游戏出画面并记录帧率（回填 §11 P0-7 性能基线）。
+   注意 §14.4 W0 的结论：**Mesa 自带的 X11 WSI 对非 sw 设备强制 DRI3，在 Xlorie 上必挂**，
+   所以只要走 GPU，就基本一定要用 layer 自带的 presenter；
+4. 验收：`vulkaninfo` 列出 Mali 设备 + `VK_KHR_xcb_surface`；DXVK 游戏出画面并记录帧率（回填 §11 P0-7）。
+
+**W0.5 —— DXVK 冒烟测试（W0 与 W1 之间的插入项，待做）**
+W0 只证明了「Vulkan 能出画」，还没证明 **DXVK**（D3D11→Vulkan）能起来。
+需要一个 D3D11 测试程序：osu!stable 是 **OpenGL(OpenTK)** 不吃 DXVK，GooseDesktop 是 GDI/WinForms 也不吃；
+计划用 mingw-w64（PC 侧交叉编译）编一个最小 D3D11 程序（创建设备 → swapchain → Clear+Present N 帧 → 打印 adapter），
+放进 `/sdcard` 当**常驻回归资产**，在 App 域内用 `VK_ICD_FILENAMES=lvp` + `DXVK_LOG_LEVEL=info` 跑通。
 
 **W2 —— 终态（C 方案，见 §8.3）**
 `wineandroid.drv` 让 winevulkan 直接拿 `ANativeWindow` → `vkCreateAndroidSurfaceKHR`，
@@ -680,13 +714,12 @@ SHM 的代价是每帧一次 CPU 拷贝（2288x1080 ≈ 9.9 MB/帧），AArch64 
 ### 14.8 开工时的第一步（照抄）
 
 ```sh
-# 0) 确认 guest 侧 lavapipe + X11 WSI 是否现成（W0 验证，不改代码）
-run-as com.protondroid sh -c 'cd files && \
-  PROOT_LOADER=$PWD/bin/loader PROOT_TMP_DIR=$PWD/tmp LD_LIBRARY_PATH=$PWD/bin PROOT_NO_SECCOMP=1 \
-  ./bin/proot -r $PWD/rootfs/debian/rootfs -0 -b $PWD/tmp:/tmp \
-  /usr/bin/env DISPLAY=:0 PATH=/usr/bin:/bin VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.aarch64.json \
-  VK_LOADER_DEBUG=all vulkaninfo --summary'
-# 期望：看到 lavapipe 设备 + VK_KHR_xcb_surface；若报 surface 扩展缺失，就是 W1 要补的层。
+# 0) W0 已完成的验证：guest 里 lavapipe + 禁用 DRI3 的内嵌 X 服务器 → Vulkan 出画
+#    （X 服务器参数由 App 的 XServer.ensureStarted() 传入：:0 -ac -nolisten tcp -disable-dri3）
+#    guest 里已装好：/usr/local/bin/{vulkaninfo,vkcube}（来自 Debian vulkan-tools 1.4.341）
+$PROOT /usr/bin/env -i DISPLAY=:0 PATH=/usr/local/bin:/usr/bin:/bin HOME=/root TMPDIR=/tmp \
+  XDG_RUNTIME_DIR=/tmp VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.json \
+  /usr/local/bin/vkcube --c 100000      # 期望：真机画面上出现旋转立方体，LorieNative ~30 FPS
 ```
 
 
