@@ -1526,3 +1526,33 @@ w=0 h=0 ×30 ; w=31785845 h=31785532 ×9 ; w=869 h=0 ×1
 - `init_monitors()` 只在 DESKTOP_CHANGED 事件处理里被调用（window.c:447），对**已存在**窗口无效；
 - 补丁落点要小心：锚点会先在头文件的声明处命中（v12 第一版）、`dllmain.c` 不含 `android.h`（第二版）、
   `window.c` 的函数只进 unix 库而 PE 链接不到（第三版）——这些都是本轮实际踩过的坑。
+
+### 16.16 【重要】上游已放弃"wine 跑在 JVM 进程里"——改成分离进程模型（附链接）
+
+调研发现（2026-10-03，网络检索；以下为外部资料，需按"未验证"对待）：
+
+1. **Wine 11.6 开始复活 Android 驱动**（Phoronix 报道）——即 `wineandroid.drv` 不再是死代码。
+2. **MR !10569（已合并，2026-04-06 提出，05-15 编辑）**：
+   <https://gitlab.winehq.org/wine/wine/-/merge_requests/10569>
+   标题：*wineandroid: rework Android integration and switch to **split process model***
+   原文要点：
+   - "The existing implementation assumes that Wine runs directly inside the JVM process. This causes a
+     number of problems on modern Android systems, including **seccomp restrictions applied to app processes**
+     and conflicts between Wine execution context assumptions and the JVM runtime."
+   - 改造内容：桌面视图改为经 **ioctl 传输**创建（含**显式传递 event pipe fd**）；JNI 初始化改造使
+     `wineandroid.so` 可被 JVM 直接加载；activity 生命周期跟随桌面客户端连接；
+     **把 Android 侧启动入口从 ntdll 移到 wineandroid.drv，并把 Wine 作为独立进程启动**。
+   - ⇒ JVM 进程只保留 Android/UI 侧的驱动部分，Wine 独立进程通过传输层通信。
+3. **MR !10683（Twaik Yont，2026-04-16，含在 !10569 里的前 4 个提交）**：
+   <https://gitlab.winehq.org/wine/wine/-/merge_requests/10683>
+   1) 修 64 位 JNI `setCursor` 崩溃；2) **targetSdkVersion 降到 28**（避开 Android 10+ W^X 限制）；
+   3) 修 Wine loader 路径 + `LD_LIBRARY_PATH` 支持直接从 APK 加载库；
+   4) 环境设置移到 Java 层（`setenv`）并简化 `wine_init`。
+
+**对我们的意义（初步）**：
+- 我们一直在修的很多问题，上游已经/正在修：loader 路径（= 我们的补丁 #6）、JNI 崩溃、W^X/targetSdk28、
+  "子进程没有 JVM"（新模型让 Wine 独立进程、不再依赖 JVM ✓✓）。
+- 我们手工打补丁的 `wine-11.0` 基线**太旧**（11.0 早于这些改造）⇒ 应考虑把 CI 基线换成
+  **包含 !10569/!10683 的版本（11.6+ / master）**，并采用新的分离进程模型，而不是继续给 11.0 打补丁。
+- 待确认：包含这些 merged MR 的具体 Wine 版本号；新模型的 App 集成方式（如何启动 Wine 独立进程、
+  传输层接口）；我们现有 7 个补丁里哪些可以删掉。
