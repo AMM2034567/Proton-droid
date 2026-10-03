@@ -293,6 +293,38 @@ if [ "${WINE_APK_MODE:-stub}" = "real" ]; then
 else
   echo "(跳过 APK：stub 模式；wine-11.0 的 APK 不含 payload，C2 用安装树)"
 fi
+
+# ④ WITH_X=1：X11 运行时 DSO + locale 单独打包（App 侧解到 filesDir 后进 LD_LIBRARY_PATH）
+#    依据：dlls/winex11.drv 链接期只 NEEDED libX11.so/libXext.so，其余（libXi/libXcursor/libXfixes）
+#    是运行时 dlopen(SONAME_LIBxxx)；libxcb/libxau/libxdmcp/libandroid-support 是 libX11.so 自己的
+#    DT_NEEDED ⇒ 必须一起带上，否则真机 dlopen 直接失败或静默降级。
+#    share/X11/locale 也必须带（否则 XSupportsLocale/XSetLocaleModifiers 失败 → xim_init 降级；
+#    App 侧需设 XLOCALEDIR 指向它）。
+if [ "${WITH_X:-0}" = "1" ]; then
+  X11ROOT="${X11_SYSROOT:-$WORK/x11sysroot}"
+  log "5.5/5 打包 X11 运行时（DSO + locale）"
+  rm -rf "$OUT/artifacts/x11-runtime"
+  mkdir -p "$OUT/artifacts/x11-runtime/lib"
+  for f in libX11.so libX11.so.6 libXext.so libXfixes.so libXcursor.so libXi.so \
+           libXrender.so libXrandr.so libxcb.so libXau.so libxdmcp.so libandroid-support.so; do
+    [ -e "$X11ROOT/usr/lib/$f" ] && cp -a "$X11ROOT/usr/lib/$f" "$OUT/artifacts/x11-runtime/lib/" \
+      || echo "(x11-runtime: 缺 $f，跳过)"
+  done
+  if [ -d "$X11ROOT/usr/share/X11/locale" ]; then
+    mkdir -p "$OUT/artifacts/x11-runtime/share/X11"
+    cp -a "$X11ROOT/usr/share/X11/locale" "$OUT/artifacts/x11-runtime/share/X11/"
+  else
+    echo "!! 缺 share/X11/locale ⇒ 真机 XSupportsLocale 会降级（xim_init）"
+  fi
+  tar czf "$OUT/artifacts/x11-runtime-arm64.tar.gz" -C "$OUT/artifacts/x11-runtime" . 2>/dev/null || true
+  ls -l "$OUT/artifacts/x11-runtime/lib" | head -20 || true
+  # 硬断言：X11 运行时必须齐（缺 libX11/libXext 说明 sysroot 不完整）
+  for f in libX11.so libXext.so libxcb.so libXau.so libXdmcp.so libandroid-support.so; do
+    [ -e "$OUT/artifacts/x11-runtime/lib/$f" ] || { echo "!! X11 运行时缺 $f"; exit 1; }
+  done
+  echo "✓ X11 运行时打包完成: $(ls "$OUT/artifacts/x11-runtime/lib" | wc -l) 个 .so"
+fi
+
 ls -lh "$OUT/artifacts" || true
 
 echo "汇总: make=$MAKE_RC make-install=$INSTALL_RC"

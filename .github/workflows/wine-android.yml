@@ -131,6 +131,8 @@ jobs:
             mkdir -p wine-out/delta
             tar czf wine-out/delta/wine-delta.tar.gz -C "$LIB" aarch64-unix aarch64-windows/winex11.drv aarch64-windows/wineandroid.drv 2>/dev/null \
               || tar czf wine-out/delta/wine-delta.tar.gz -C "$LIB" aarch64-unix 2>/dev/null || true
+            # X11 运行时（DSO + locale）也塞进小产物，真机验证时一次下完
+            [ -f wine-out/artifacts/x11-runtime-arm64.tar.gz ] && cp wine-out/artifacts/x11-runtime-arm64.tar.gz wine-out/delta/ || true
             ls -lh wine-out/delta || true
           else
             echo "(没有 $LIB，跳过增量打包)"
