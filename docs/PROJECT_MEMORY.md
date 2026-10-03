@@ -1192,3 +1192,38 @@ $env:JAVA_HOME="D:\jdk-17.0.20.101-hotspot"
 .\gradlew.bat :app:assembleDebug     --offline --console=plain   # 出 app/build/outputs/apk/debug/app-debug.apk（16.3MB）
 ```
 已核验：`WineActivity`（javac）与 `WineAndroidPayload`（Kotlin）都在 APK 的 DEX 里（`classes5/6.dex`）。
+
+### 16.9 C2 真机调试实录（2026-10-04，PGZ110 / Android 15）
+
+**已经跑通的部分（这是 C 方案第一次在真机上把 wine 拉起来）**：
+- `WineAndroidPayload` 解包 174MB → 1167MB 到 `files/{arm64-v8a,share,include}`，写入 marker 后跳过重复解包 ✓
+- `System.load(ntdll.so)` → `wine_init` → **wineboot 跑起来并成功建出 prefix**
+  （`files/prefix-android/drive_c/{windows,system32,users,Program Files}` 都在）✓
+- wine 认出了真 GPU：`warn:system:add_gpu Using vulkan GPU pci_id 0x13b5:0000, name "Mali-G610 MC6"` ✓
+- `/desktop=shell,,android` 生效：trace 显示 wine **确实去加载 `wineandroid.drv`**（PE 映射正常）
+
+**当前唯一卡点**：`wineandroid.drv` 的 `DllMain(PROCESS_ATTACH)` 返回 FALSE
+```
+0024:warn:module:process_attach Initialization of L"wineandroid.drv" failed
+0024:err:winediag:nodrv_CreateWindow L"The graphics driver is missing. Check your build!"
+```
+`DllMain` 里只有两处可能失败：① `__wine_init_unix_call()`；② unix `android_init()` 里的
+`dlopen("ntdll.so", RTLD_NOW)`（`init.c:528`，该函数唯一的失败返回点）。
+已加补丁 v4（`dllmain.c`/`init.c` 各加 ERR 诊断）+ `dlopen` 的 `RTLD_DEFAULT` 兜底，
+并在 Java 侧用 `NativeBridge.nativeLoadGlobal`（`dlopen(RTLD_NOW|RTLD_GLOBAL)`）把三个 `.so` 提升为全局可见。
+
+**真机踩坑清单（都已修进代码/脚本）**：
+1. **装载器没有执行位** → `err:environ:run_wineboot failed to start wineboot 1`、prefix 建不起来。
+   wine-11.0 对 linux-android **不把装载器装到 `bin/`**，它在
+   `lib/wine/aarch64-unix/{wine,wine-preloader}` ⇒ 解包器必须给这几个文件补 `+x`（不只是 `bin/`）。
+2. **`bin/` 里的 12 个软链（`winecfg`/`wineboot`/… → `wine`）是悬空的**（上游 Android 构建的既知形态），
+   解包器仍按 symlink 创建，不影响使用。
+3. **`/sdcard` 读不了**：ColorOS 上 shell 连 `appops set … MANAGE_EXTERNAL_STORAGE allow` 都没权限
+   （uid 2000 缺 `MANAGE_APP_OPS_MODES`）⇒ 载荷走 **adb → `/data/local/tmp` → `run-as` 拷进
+   `files/payload/`** 最稳；代码里公共目录读取失败也必须能优雅回退（原来直接 EACCES 崩了）。
+4. **`isInstalled()` 把 marker 也算进判据**，而 marker 是校验之后才写的 ⇒ 永远 "校验失败"。
+   已改成只看 `ntdll.so` + `wineserver` 存在。
+5. wine 的 stderr **不进 logcat**：把通道写进 `files/winedebug`（内容如 `err+all,warn+all,fixme+all`）
+   才会重定向到 `files/log` —— 这是唯一能看到 wine 内部错误的路子（`run-as cat files/log`）。
+6. 调试时用 `adb logcat -s ProtonBridge:V wine:V`；抓全量要先 `adb logcat > file` 持续重定向，
+   否则 40 秒后缓冲被系统日志冲掉。
