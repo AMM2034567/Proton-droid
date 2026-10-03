@@ -15,6 +15,7 @@
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <fcntl.h>
+#include <dlfcn.h>
 #include <signal.h>
 #include <android/log.h>
 #include <android/native_window.h>
