@@ -163,10 +163,30 @@ class ProtonProcessManager(private val context: Context) {
         )
 
         // 目标程序
+        // 调试用：files/guest_preload.txt 里的路径会以 `LD_PRELOAD` 注入 **只给 wine 进程**
+        // （通过 /usr/bin/env，保持 wine 的真实 argv[0]/自身路径；不能塞进 proot 的环境，
+        //  因为 proot 是 bionic 二进制，加载 guest 路径的 .so 会 "CANNOT LINK EXECUTABLE"）。
+        val guestPreload = readGuestPreload()
+        if (guestPreload != null) {
+            args += "/usr/bin/env"
+            args += "LD_PRELOAD=$guestPreload"
+        }
         args += ProtonLayout.WINE_GUEST_PATH
         args += listOf("explorer", "/desktop=ProtonDroid,1280x720", guestGamePath)
         args += extraArgs
         return args
+    }
+
+    /** 读取 files/guest_preload.txt（一行一个路径，取第一个非空非注释行） */
+    private fun readGuestPreload(): String? {
+        return try {
+            val f = File(context.filesDir, "guest_preload.txt")
+            if (!f.isFile) return null
+            f.readLines().map { it.trim() }.firstOrNull { it.isNotEmpty() && !it.startsWith("#") }
+        } catch (e: Exception) {
+            Log.w(tag, "readGuestPreload failed: ${e.message}")
+            null
+        }
     }
 
     private fun buildGuestEnv(): Array<String> {

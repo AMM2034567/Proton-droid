@@ -801,6 +801,71 @@ proton 发行包把 DXVK 放在 `files/lib/wine/dxvk/{aarch64,i386,x86_64}-windo
 | E5 | `WINEDEBUG=+vulkan,+x11drv`（走 `files/wine_debug.txt`） | 看到 surface/drawable 与真实 X 请求 | 1 轮 |
 | E6 | 去掉虚拟桌面包装，直接 `wine dxvk_probe.exe` | H2 | 1 轮 |
 
+#### 已执行的实验结果（2026-10-04，按时间顺序；**勿重复**）
+
+**E1 · 全窗口枚举 + 像素读回（决定性）**
+工具已固化：`cache/xwin_dump.py`（递归列全部窗口，含 unmapped，带 map_state/几何/名字）、
+`cache/xreadback2.py`（XGetImage 读回指定窗口像素）、`cache/probe_all_windows.sh`（一次读回全部候选窗口）。
+⚠️ 坑：`XGetPixel` 的参数是 `(XImage*, x, y)`，一开始误写成 `(dpy, img, x, y)` → 段错误（浪费了一轮）。
+
+- 窗口树（共 18 个，含 unmapped）：wine desktop `0x400006` 1280x720 IsViewable；控制台窗口
+  `0xe00003` 665x427；探针窗口 `0x1600003` 640x480（截图里看到的那个）；
+  **其子窗口 `0x1800032` 632x453 IsViewable —— 尺寸与 DXVK 日志里的 swapchain Buffer size 完全一致**
+  ⇒ present 目标就是**可见客户区**，不是隐藏窗口（**H1 被推翻**）。
+- 像素读回（采样 5px 步长）：desktop/outer 只有桌面蓝 `#3296fa` + 窗口装饰 `#e3e3e3` + 大片黑；
+  console 与 **swapchain 窗口 = 100% `#000000`** ⇒ **像素没有进入任何一个 X 窗口**（连"写错窗口"都不是）。
+
+**机制（`+x11drv` / `+vulkan` trace）**
+- `+x11drv`：`x11drv_client_surface_create Created 0x60074/… for client window 0x1600032`、
+  `client_surface_update_geometry … size 632,453`、`needs_offscreen_rendering … alpha_mask 0`、
+  `client_surface_update_offscreen … offscreen 0`，且**每次 present 都有一组 `x11drv_client_surface_update`**
+  （1283 组 ≈ present 次数）⇒ 图像上传是 **wine 侧 win32u/winex11 的 "client surface"** 负责，且非离屏。
+- `+vulkan`：`thunk32_vkQueuePresentKHR` / `win32u_vkQueuePresentKHR` 各 1254 次
+  ⇒ present 确实转进了 wine 的 win32u（表面创建走 `win32u_vkCreateInstance` 体系）。
+
+**环境事实（重要，此前不知道）**
+- **本设备 Android 内核完全没有 SysV IPC**：`shmget` → errno 38 (ENOSYS)；
+  `/dev/shm`、`/proc/sysvipc/`、`/proc/sys/kernel/shmmax` 均不存在。
+- 但 Xlorie 仍**广告 MIT-SHM**（`xdpyinfo` 里在）⇒ 任何走 Xlib `XShmCreateImage`（SysV）的客户端必然失败。
+- 对照：核心协议 `XPutImage` **实测完美落地**（窗口读回 `#00ff00`）；lavapipe + vkcube（原生 xcb 客户端）
+  present 也正常（30 FPS，立方体可见）⇒ **X 服务器与 ICD 本身都能 present**，坏的是 wine 的窗口上传路径。
+
+**假设检验（全部失败，均已排除）**
+- 加 `LD_PRELOAD` 垫片让 wine 认为 MIT-SHM 不可用：`cache/noshim.c`（clang `--target=aarch64-linux-gnu
+  -shared -nostdlib` 编成 2KB `libnoshim.so`，覆盖 `XShmQueryExtension`/`XShmQueryVersion` 返回 0）。
+  注入方式：**新增 `files/guest_preload.txt`** → App 用 `/usr/bin/env LD_PRELOAD=…` **只给 wine** 注入
+  （直接把 LD_PRELOAD 塞进 proot 的环境会因 proot 是 bionic 二进制而 "CANNOT LINK EXECUTABLE … not found"；
+  也不要试图用 shell wrapper 替换 wine —— wine 会因此找不到自己的目录而完全起不来）。
+  已验证垫片加载进所有 wine 进程（`/proc/<pid>/maps` 有 `libnoshim.so`）⇒ **MIT-SHM 假设被否**（仍全黑）。
+- `-legacy-drawing`（Xlorie 改用 FD 缓冲/CPU 路径）⇒ 仍全黑。
+- `+dri3`（启用 DRI3）⇒ 窗口内容**从纯黑变纯白**（present 走得更远，但拿到的是空 pixmap），
+  **仍无 DXVK 画面**。
+- `+dri3` + App 进程注入 `TERMUX_X11_FORCE_FLIP=1`（针对 Xlorie "拒绝导入 FD 缓冲的 flip" 那条特判）⇒ 仍纯白。
+
+**当前结论**：wine 的 win32-surface 上传在 Xlorie 上**静默失效**。最大嫌疑是 Xlorie 的非标准能力面：
+DRI3 单向残缺（`fds_from_pixmap = FalseNoop`、无标准 `DRI3Open`）、GLX 是桩、Present flip 拒绝导入 FD 缓冲、
+无合成器/无 DRM render node —— wine 期望的某条标准路径在这里被静默吞掉。
+
+**剩下两条决定性诊断（下一步按此顺序）**
+1. **X 协议追踪**（Python 代理或 `xscope`）：看 wine 到底发的是 `PutImage` / `ShmPutImage` /
+   `PresentPixmap` / `CopyArea` 中的哪一种、发往哪个 drawable——据此决定"给 Xlorie 补什么"或"给 wine 打什么补丁"。
+2. **Xvfb 对照**（guest 里起标准 X 服务器，DISPLAY=:1，跑同一探针）：
+   若 DXVK 在 Xvfb 上正常 ⇒ 问题是 **Xlorie 特有**；若同样失败 ⇒ 问题是 **wine/Proton 侧**。
+
+**方案取舍（等上面两条结论出来再定，当前不动手）**
+- (1) 补 Xlorie / 重编 **libXlorie**：工作量中等（要能构建 X 服务器），但**不需要重编 Proton**。
+- (2) 给 wine 打补丁 / 重编 **Proton**：补丁很小（例如让 client surface 上传走已验证可用的 `XPutImage`），
+  但 Proton 构建重、耗时长。
+- (3) **C 方案（wineandroid.drv）**：wine 直接对 `ANativeWindow` 用 `VK_KHR_android_surface`，
+  整条 X / win32u 上传链都不需要 —— 功能与性能的终态，**需要重编 Proton**（本就在计划内）。
+
+**新增的免重编调试开关（本轮加的，善用）**
+- `files/xserver_args.txt`：X 服务器参数。`+dri3`/`enable-dri3` = 启用 DRI3（默认禁用并加 `-disable-dri3`）；
+  其余 `-` 开头行原样追加（`-legacy-drawing`、`-disable-gpu-present`、`-force-sysvshm`、`-check-drawing`）。
+- `files/app_env.txt`：注入 **App 进程** 环境（DDX 用 `getenv` 读的开关，如 `TERMUX_X11_FORCE_FLIP`）。
+- `files/guest_preload.txt`：只给 **wine 进程** 设 `LD_PRELOAD`。
+- `files/extra_env.txt`：guest 环境（覆盖同名键）；`files/wine_debug.txt`：WINEDEBUG。
+
 #### 这个卡点为什么必须先解决
 
 - 它是「**从 D3D 到屏幕的最后一段**」；W0 证明的只是**宿主 ICD 的 WSI 能出画**（vkcube 那条路）。

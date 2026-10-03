@@ -103,6 +103,27 @@ object XServer {
         // 上一次异常退出可能残留 X lock，导致 "Server is already active for display 0"
         File(tmpDir, ".X$DISPLAY-lock").delete()
 
+        // 支持通过 files/app_env.txt 注入宿主 App 进程环境变量（如 TERMUX_X11_FORCE_FLIP=1）
+        val appEnvFile = File(layout.filesDir, "app_env.txt")
+        if (appEnvFile.isFile) {
+            appEnvFile.readLines().forEach { raw ->
+                val line = raw.trim()
+                if (line.isNotEmpty() && !line.startsWith("#")) {
+                    val idx = line.indexOf('=')
+                    if (idx > 0) {
+                        val k = line.substring(0, idx).trim()
+                        val v = line.substring(idx + 1).trim()
+                        try {
+                            Os.setenv(k, v, true)
+                            Log.i(TAG, "App host env injected: $k=$v")
+                        } catch (t: Throwable) {
+                            Log.w(TAG, "Failed to setenv $k=$v", t)
+                        }
+                    }
+                }
+            }
+        }
+
         try {
             System.loadLibrary("Xlorie")
         } catch (t: Throwable) {
@@ -111,14 +132,26 @@ object XServer {
         }
 
         return try {
-            // `-disable-dri3`：Xlorie 的 DRI3 是**单向残缺**的（dri3_screen_info.fds_from_pixmap = FalseNoop，
-            // 且无标准 DRI3Open），而 Mesa 的 X11 Vulkan WSI 一旦看到 DRI3 就会优先走 DRI3 present 路径
-            // → 画面永远到不了服务器（实测：vkcube 正常渲染但窗口全黑、无 damage）。
-            // 关掉 DRI3 后 Mesa 会回落到软件 present（PutImage/SHM），lavapipe 这类 sw 设备即可出画。
-            // 对 GPU ICD + vulkan-wsi-layer(SHM presenter) 这条正路也是必要条件。
-            val instance = CmdEntryPoint(
-                arrayOf(":$DISPLAY", "-ac", "-nolisten", "tcp", "-disable-dri3")
-            )
+            // X 服务器参数可用文件免重编 A/B（files/xserver_args.txt）：
+            //   · 默认（无文件 / 无 `+dri3`）：加 `-disable-dri3`
+            //     —— Xlorie 的 DRI3 单向残缺（fds_from_pixmap = FalseNoop、无标准 DRI3Open），
+            //        Mesa 的 X11 Vulkan WSI 见到 DRI3 就优先走 DRI3 present → 画面到不了服务器。
+            //   · 文件里含 `+dri3`（或 `enable-dri3`）：不加 `-disable-dri3`（对照实验用）
+            //   · 其它以 `-` 开头的行原样追加，例如：
+            //     `-disable-gpu-present` / `-force-sysvshm` / `-legacy-drawing` / `-check-drawing`
+            val baseArgs = mutableListOf(":$DISPLAY", "-ac", "-nolisten", "tcp")
+            val argsFile = File(layout.filesDir, "xserver_args.txt")
+            val extraArgs = if (argsFile.isFile) {
+                argsFile.readLines()
+                    .map { it.trim() }
+                    .filter { it.isNotEmpty() && !it.startsWith("#") }
+                    .flatMap { it.split("\\s+".toRegex()) }
+            } else emptyList()
+            val enableDri3 = extraArgs.any { it.equals("+dri3", true) || it.equals("enable-dri3", true) }
+            if (!enableDri3) baseArgs.add("-disable-dri3")
+            baseArgs.addAll(extraArgs.filter { !it.startsWith("+") && !it.equals("enable-dri3", true) })
+            Log.i(TAG, "Starting X server with args: ${baseArgs.joinToString(" ")}")
+            val instance = CmdEntryPoint(baseArgs.toTypedArray())
             if (!instance.startServer()) {
                 Log.e(TAG, "native start() returned false (TMPDIR/XKB_CONFIG_ROOT 是否就绪？)")
                 return false
