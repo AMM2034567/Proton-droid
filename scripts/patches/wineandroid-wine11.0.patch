@@ -119,6 +119,36 @@ diff --git a/dlls/wineandroid.drv/window.c b/dlls/wineandroid.drv/window.c
  
      for (;;)
      {
+@@ -975,8 +979,11 @@ BOOL ANDROID_CreateWindow( HWND hwnd )
+     {
+         struct android_win_data *data;
+ 
+-        init_event_queue();
+-        start_android_device();
++        if (!desktop_tid)
++        {
++            init_event_queue();
++            start_android_device();
++        }
+         if (!(data = alloc_win_data( hwnd ))) return FALSE;
+         release_win_data( data );
+     }
+@@ -1240,6 +1247,15 @@ BOOL has_client_surface( HWND hwnd )
+  */
+ BOOL ANDROID_CreateDesktop( const WCHAR *name, UINT width, UINT height )
+ {
++    /* 真机实测：win32u 会先调 pCreateDesktop、之后才建桌面窗口，
++     * 于是 ANDROID_CreateWindow 里的初始化永远等不到 ⇒ desktop_tid/screen_width 恒为 0 ⇒ 死等。
++     * 这里先把事件队列与设备线程（Java 侧桌面视图的建立者）拉起来。 */
++    if (!desktop_tid)
++    {
++        init_event_queue();
++        start_android_device();
++    }
++
+     /* wait until we receive the surface changed event */
+     while (!screen_width)
+     {
 
 diff --git a/dlls/ntdll/unix/loader.c b/dlls/ntdll/unix/loader.c
 --- a/dlls/ntdll/unix/loader.c
