@@ -1,9 +1,10 @@
 # Proton-droid 项目记忆（Project Memory）
 
-> 最后更新：2026-10-04（B 方案真机打通、游戏出画面；Vulkan WSI 桥已规划，见第 14 节）
-> 状态：**B 方案（内嵌 libXlorie）已真机验证** —— 内嵌 X 服务器 ↔ guest ↔ wine 全链路打通，
-> 真实 .NET 游戏 GooseDesktop 已在 App 内活跃渲染（§8.2 第 5 条、§11 P0-6）。
-> 3D 游戏（DXVK）仍不通，卡在 **Vulkan WSI**（`VK_KHR_xcb_surface is not supported`）→ 方案见 **第 14 节（未动工）**。
+> 最后更新：2026-10-04（W0 打通 Vulkan 呈现；W0.5 卡在 DXVK 黑屏，见 §14.8；接力提示词见第 15 节）
+> 状态：**B 方案（内嵌 libXlorie）真机验证通过** —— 显示链路全通，GooseDesktop 活跃渲染；
+> **W0 ✅**：`-disable-dri3` 后 lavapipe + vkcube 出画（30 FPS）；
+> **W0.5 🚧 卡点**：DXVK 初始化/3000 次 Present 全成功、服务器有 damage，但可见窗口纯黑（§14.8）；
+> **W1 待做**：真 GPU 的 WSI（vulkan-wsi-layer / ARM DDK glibc libmali）。
 > 终态演进到 **C（wineandroid.drv）**。
 > 正式版方向：**App 内置下载 rootfs 与编译好的 Proton 产物**（产物走自己打包 → GitHub Release），见第 12 节。
 > 本文件是下次开工的第一入口；改动运行链路的代码前请先读第 2 节「铁律」。
@@ -550,7 +551,7 @@ Proton 产物下载并装配好。
 
 ---
 
-## 14. Vulkan WSI 桥（规划中 —— **未动工**）
+## 14. Vulkan WSI 桥（W0 已完成 ✅；W1 待做；**W0.5 卡点见 §14.8**）
 
 > 状态：**仅规划，未写任何代码**（用户 2026-10-04 明确要求先落记忆）。
 > 这一节是 3D 游戏（D3D9/10/11/12 → DXVK/VKD3D → Vulkan）能不能跑起来的**唯一硬缺口**。
@@ -744,7 +745,72 @@ proton 发行包把 DXVK 放在 `files/lib/wine/dxvk/{aarch64,i386,x86_64}-windo
 - Termux-X11 X server ↔ Surface 同步/帧调度：<https://github.com/termux/termux-x11/issues/979>
 - Vulkan WSI 规范：<https://docs.vulkan.org/spec/latest/chapters/VK_KHR_surface/wsi.html>
 
-### 14.8 开工时的第一步（照抄）
+### 14.8 **DXVK present 黑屏卡点（当前唯一卡点；下一会话从这一节开始）**
+
+#### 事实（全部已在真机量过，勿重复验证）
+
+| 观测 | 证据 |
+| --- | --- |
+| DXVK 初始化成功 | `Creating sampler descriptor heap`、`Graphics pipeline libraries supported`、`Presenter: Actual swapchain properties: VK_FORMAT_B8G8R8A8_UNORM / VK_PRESENT_MODE_IMMEDIATE_KHR / Buffer size 632x453 / Image count 4` |
+| Present 全部成功 | 探针自己的 `dxvk_probe.log`：`present=3000`、`done, presented=3000` |
+| X 服务器确实收到 damage | present 期间 `LorieNative` 帧率 0.4 → **24~27 FPS** |
+| **可见窗口没变** | 窗口区域像素 `distinct=1`、100% `(0,0,0)`；连拍两帧差分只有 17x22 px 的鼠标光标 |
+| 同一 X 服务器下 vkcube 正常 | 同区域 vkcube 截图有 **3107** 种颜色（旋转立方体） |
+
+核心矛盾：**同 ICD、同 X 服务器、同尺寸窗口，vkcube 的 present 出画，DXVK 的 present 不出画，但两者都在服务器上产生了帧。**
+
+#### 关键认知：两者不是同一条 present 路径
+
+- **vkcube（Linux 原生）**：`vkCreateXcbSurfaceKHR(自己创建的 X 窗口)` → 宿主 ICD 的 WSI（Mesa `wsi_common_x11`）→ 直接往那个 **X 窗口**写像素。窗口即 X 窗口 ⇒ ✅ 可见。
+- **DXVK（Windows PE）**：只会 `vkCreateWin32SurfaceKHR`（窗口是 **HWND**）→ winevulkan 必须翻译成宿主表面，两条路：
+  (a) 宿主 ICD 支持 `VK_KHR_xcb_surface`，wine 把 HWND 映射成某个 X 窗口 id；
+  (b) 共享内存 + `VK_EXT_external_memory_host`，app 渲染进 wine 自己的内存，再由 wine 用普通 X 请求刷进窗口。
+  日志里 `fixme:vulkan:allocate_external_host_memory Using VK_EXT_external_memory_host` 就是 (b) 的指纹。
+  **(a)(b) 把像素写进的 drawable 不同，Xlorie 能否"看见"也就不同。**
+
+#### Xlorie 侧的三条硬约束（源码实证，`lorie/src/main/cpp/lorie/InitOutput.c`）
+
+1. 每个 pixmap 都是 `LorieBuffer`（AHardwareBuffer/FD），窗口有自己的 window pixmap；
+   **只有 root（屏幕）的 damage 会被合成成一帧推给 App** ⇒ "有帧" ≠ "该窗口内容变了"。
+2. `loriePresentFlip()` 在这些情况下直接 `return FALSE`：
+   - `!priv || !priv->buffer || priv->mem`（pixmap 是普通内存）
+   - root 尺寸 ≠ pixmap 尺寸
+   - `desc->type == LORIEBUFFER_FD && priv->imported && TERMUX_X11_FORCE_FLIP != 1`
+     （注释原话：*"For some reason it does not work fine with turnip."*）
+3. `lorieTryScheduleGpuCopy()` 在 `gpuPresentDisabled || legacyDrawing` 时放弃、回落 CPU 拷贝；
+   DRI3 单向残缺：`pixmap_from_fds` ✓ 能导入、`fds_from_pixmap = FalseNoop` ✗、无标准 `DRI3Open`。
+
+#### 三个仍在竞争的解释（含判别实验）
+
+- **H1 · present 写进了"另一个" X 窗口**（wine 的 whole-window / 隐藏窗口 / offscreen pixmap）：
+  damage 记在别的 drawable 上，可见窗口自然不动。**最便宜、最可能一击命中。**
+- **H2 · 像素停在 wine 客户内存里，刷窗那步没触发**（`WM_PAINT`/`X11DRV` flush 在虚拟桌面拓扑下没走到）：
+  日志里那条 external-memory fixme 支持这个方向。
+- **H3 · flip 被 Xlorie 拒绝**，回落的拷贝路径对"导入缓冲"也没落地。
+- **元凶候选（必须先排除）**：`-disable-dri3` 是为了让 vkcube/Mesa WSI 出画才加的；
+  而 **wine 的 win32-surface + Present 很可能正需要 DRI3 的 fd 导入/flip** ⇒ 两个消费者可能要**不同配置**。
+
+#### 诊断顺序（成本从低到高，建议 E1→E2→E3 先跑）
+
+| # | 实验 | 期望信号 | 成本 |
+| --- | --- | --- | --- |
+| E1 | 列出**全部** X 窗口（含 unmapped）＋几何/映射状态 | 直接找到 present 真正写入的窗口 | 1 次运行 |
+| E2 | 把 `-disable-dri3` 改成**文件开关**（免重编），DRI3 on/off × 探针各一轮 | DRI3 开时是否出画 | 改约 10 行 + 2 轮 |
+| E3 | **App 进程**注入 `TERMUX_X11_FORCE_FLIP=1`（DDX 用 `getenv` 读，只在 guest env 里设无效） | H3 | 改约 3 行 |
+| E4 | `-disable-gpu-present` / `-force-sysvshm` / `-legacy-drawing` 三组对照 | GPU 拷贝路径是否相关 | 3 轮 |
+| E5 | `WINEDEBUG=+vulkan,+x11drv`（走 `files/wine_debug.txt`） | 看到 surface/drawable 与真实 X 请求 | 1 轮 |
+| E6 | 去掉虚拟桌面包装，直接 `wine dxvk_probe.exe` | H2 | 1 轮 |
+
+#### 这个卡点为什么必须先解决
+
+- 它是「**从 D3D 到屏幕的最后一段**」；W0 证明的只是**宿主 ICD 的 WSI 能出画**（vkcube 那条路）。
+- **W1 的 vulkan-wsi-layer 是给宿主 ICD 补 WSI 的**。若 winevulkan 对 DXVK 走的是 H2 那条
+  "共享内存 + 自己刷窗"的路，则 **WSI 层对 DXVK 毫无帮助** —— 必须在投 W1 的工程量之前定性，
+  否则做完 W1 可能发现 D3D 游戏依旧黑屏。
+- 终态仍是 **C 方案（wineandroid.drv）**：wine 直接把 `ANativeWindow` 交给 winevulkan，
+  一次绕开 X、Present、共享内存整条链 —— 这也是性能最优解。
+
+### 14.9 开工时的第一步（照抄）
 
 ```sh
 # 0) W0 已完成的验证：guest 里 lavapipe + 禁用 DRI3 的内嵌 X 服务器 → Vulkan 出画
@@ -753,6 +819,76 @@ proton 发行包把 DXVK 放在 `files/lib/wine/dxvk/{aarch64,i386,x86_64}-windo
 $PROOT /usr/bin/env -i DISPLAY=:0 PATH=/usr/local/bin:/usr/bin:/bin HOME=/root TMPDIR=/tmp \
   XDG_RUNTIME_DIR=/tmp VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.json \
   /usr/local/bin/vkcube --c 100000      # 期望：真机画面上出现旋转立方体，LorieNative ~30 FPS
+```
+
+---
+
+## 15. 新会话接力提示词（Session handoff prompt）
+
+> 用途：把下面代码块里的内容原样粘贴给一个新会话，它即可凭本文件（尤其 §14.8）继续推进
+> 「DXVK present 黑屏」卡点，不需要重新探索环境。
+
+```text
+任务：Proton-droid（Android 上用 PRoot + Proton 跑 Windows 游戏）—— 解决「DXVK present 黑屏」卡点。
+
+第一步：完整读 docs/PROJECT_MEMORY.md，重点是 §0（现状）、§2（铁律）、§11（TODO）、§14（Vulkan WSI），
+其中 §14.8 是本卡点的完整分析与实验计划（E1–E6），请从那里开始。
+
+背景（已真机验证，不要重复验证）：
+- App 已完全脱离 Termux：App → proot(aarch64) → Debian trixie glibc guest → Proton wine-11 →
+  内嵌 libXlorie X 服务器（同进程，socket = files/tmp/.X11-unix/X0）→ EGL → SurfaceView；
+  真实 .NET 游戏 GooseDesktop 已能活跃渲染（6~9 FPS，帧率低是 guest 执行栈/proot 的锅，不是显示层）。
+- W0 已完成：内嵌 X 服务器加 `-disable-dri3` 后，guest 里 lavapipe + vkcube 能在真机出画（~30 FPS）。
+  原因：Xlorie 的 DRI3 单向残缺，而 Mesa 的 X11 Vulkan WSI 见到 DRI3 就优先走 DRI3 present → 黑屏。
+- W0.5 现状（本卡点）：自编 32 位 D3D11 探针（源码 cache/dxvk_probe.c；真机
+  /sdcard/Download/ProtonDroid/games/dxvkprobe/dxvk_probe.exe）已能让 DXVK 初始化成功、
+  3000 次 IDXGISwapChain::Present 全部成功、X 服务器帧率升到 24~27 FPS（damage 有产生），
+  但**可见窗口内容仍是纯黑**（像素级 distinct=1、100% (0,0,0)）。
+
+目标：定位并修复「DXVK present 产生 damage 但不改可见窗口」，验收标准 =
+探针窗口出现随时间变化的颜色（间隔 2~3 秒两张截图在窗口区域存在像素差异，且非全黑）。
+
+按 §14.8 的 E1→E6 顺序执行，每步记录「命令 → 现象 → 结论」再进下一步：
+E1 列出全部 X 窗口（含 unmapped）＋几何/映射状态，找 present 真正写入的 drawable；
+E2 把 `-disable-dri3` 改成文件开关（免重编），DRI3 on/off 各跑一轮探针；
+E3 给 App 进程注入 TERMUX_X11_FORCE_FLIP=1（DDX 用 getenv 读，只在 guest env 设无效）；
+E4 `-disable-gpu-present` / `-force-sysvshm` / `-legacy-drawing` 三组对照；
+E5 WINEDEBUG=+vulkan,+x11drv 抓 surface/drawable 与真实 X 请求；
+E6 去掉虚拟桌面包装，直接 `wine dxvk_probe.exe`。
+
+环境速查（照抄）：
+- 设备 PGZ110（Android 15）；adb：D:\XSBDownload\SDK\platform-tools\adb.exe（会偶发掉线，重连即可）
+- 构建：$env:GRADLE_USER_HOME='D:\cargoproject\Proton-droid\.gradle-home'；
+  $env:ANDROID_USER_HOME='D:\cargoproject\Proton-droid\.android-home'；
+  .\gradlew.bat assembleDebug；adb install -r app\build\outputs\apk\debug\app-debug.apk
+  （本地固定 debug 签名，install -r 会保留 2.4GB 运行时）
+- 免重编调试钩子：files/wine_debug.txt（WINEDEBUG）；files/extra_env.txt（每行 KEY=VALUE，
+  **覆盖**同名 guest 环境变量，如 VK_ICD_FILENAMES / DXVK_LOG_LEVEL）
+- guest 命令模板（run-as 域；注意 wine 需要 App 域，故仅用于非 wine 的检查）：
+  run-as com.protondroid sh -c 'cd files && PROOT_LOADER=$PWD/bin/loader PROOT_TMP_DIR=$PWD/tmp \
+    LD_LIBRARY_PATH=$PWD/bin PROOT_NO_SECCOMP=1 ./bin/proot -r $PWD/rootfs/debian/rootfs -0 \
+    -b $PWD/tmp:/tmp /usr/bin/env -i DISPLAY=:0 PATH=/usr/bin:/bin HOME=/root TMPDIR=/tmp <cmd>'
+- 启动游戏：App 主页「全屏启动游戏」；扫描器只选 games/ 下的一个 exe，要换目标就把其它
+  游戏目录临时移到 /sdcard/Download/ProtonDroid/ 下（run-as 的 mv 会失败，用 adb shell mv）
+- 读日志：adb exec-out run-as com.protondroid cat files/proton-stdout.log > cache\x.log
+  探针自记日志：/sdcard/Download/ProtonDroid/games/dxvkprobe/dxvk_probe.log
+- x86_64 PE 跑不了（本 Proton 只有 32 位 FEX WOW64）→ 测试程序必须 -m32 编译；
+  mingw：cache\toolchain\w64devkit\w64devkit（编译前把 TEMP/TMP 指到 cache\tmp，
+  否则 gcc 报 Cannot create temporary file）
+- 图像判据用像素分析（cache/cmp_region.py、cache/diff_regions.py），不要靠肉眼
+- ⚠️ PowerShell 引号坑：不要在 adb shell "..." 里写含 |、$PWD、\" 的复杂命令（会被本地解释）。
+  一律用 write 工具写成 .sh 推到 /data/local/tmp 再 chmod +x 执行。
+- 提交与同步：较大改动后回写 docs/PROJECT_MEMORY.md 并在 commit message 末尾加
+  `Memory: 已更新 docs/PROJECT_MEMORY.md §X`；推送：
+  git -c http.proxy=http://127.0.0.1:20808 push https://x-access-token:<gh token>@github.com/AMM2034567/Proton-droid.git HEAD:main
+  （token 用 gh auth token 取，注意别把 token 打进输出）
+
+约束：
+- 不要重复验证 §14.8 表格里已有结论的项；不要为了"看起来有进展"改无关代码。
+- 每轮真机实验后立刻把结论写回 §14.8，避免上下文丢失。
+- 同类实验连续两轮没进展就上 E5（+vulkan,+x11drv）拿硬证据，不要猜。
+- 若最终确认 winevulkan 走的是"共享内存 + 自己刷窗"路径（H2），请在记忆里明确写出
+  「W1 的 vulkan-wsi-layer 对 DXVK 无效」，并把结论反馈给 C 方案（wineandroid.drv）的优先级评估。
 ```
 
 
