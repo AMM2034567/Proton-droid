@@ -131,6 +131,36 @@ for t in tools/wine/wine tools/winebuild/winebuild tools/widl/widl; do
   fi
 done
 
+# ── 2.8/5 bionic X11 sysroot（WITH_X=1 时）───────────────────────────────────────
+# aarch64-linux-android 是 bionic，NDK 不提供任何 X 客户端库 ⇒ 从 Termux 的 aarch64 .deb 取。
+# 只需编译期头文件 + 可链接的 .so；运行时真正需要的 DSO 会另外打包（见 5/5）。
+if [ "${WITH_X:-0}" = "1" ]; then
+  X11ROOT="${X11_SYSROOT:-$WORK/x11sysroot}"
+  TERMUX_MIRROR="${TERMUX_MIRROR:-https://packages.termux.dev/apt/termux-main}"
+  X11_PKGS="xorgproto libx11 libxext libxfixes libxcursor libxi libxrender libxrandr libxcb libxau libxdmcp libandroid-support"
+  log "2.8/5 准备 bionic X11 sysroot（Termux .deb → $X11ROOT）"
+  mkdir -p "$X11ROOT" "$WORK/x11deb"
+  wget -q "$TERMUX_MIRROR/dists/stable/main/binary-aarch64/Packages.gz" -O "$WORK/Packages.gz"
+  gunzip -c "$WORK/Packages.gz" > "$WORK/Packages"
+  for p in $X11_PKGS; do
+    fn=$(awk -v pkg="$p" '/^Package: /{cur=$2} /^Filename: /{if(cur==pkg){print $2; exit}}' "$WORK/Packages")
+    [ -n "$fn" ] || { echo "!! Termux 索引里找不到 $p"; exit 1; }
+    wget -q "$TERMUX_MIRROR/$fn" -O "$WORK/$(basename "$fn")"
+    dpkg-deb -x "$WORK/$(basename "$fn")" "$WORK/x11deb/$p"
+    cp -a "$WORK/x11deb/$p/data/data/com.termux/files/usr/." "$X11ROOT/usr/"
+  done
+  for f in X11/Xlib.h X11/Xutil.h X11/Xresource.h X11/Xmd.h X11/Xproto.h \
+           X11/extensions/XInput2.h X11/extensions/Xfixes.h X11/extensions/Xrender.h \
+           X11/extensions/randr.h X11/Xcursor/Xcursor.h; do
+    [ -f "$X11ROOT/usr/include/$f" ] || { echo "!! 缺头文件 $f"; exit 1; }
+  done
+  for f in libX11.so libXext.so libXfixes.so libXCursor.so libXi.so libXrender.so libXrandr.so; do
+    [ -e "$X11ROOT/usr/lib/$f" ] || [ -e "$X11ROOT/usr/lib/libXcursor.so" ] || { echo "!! 缺 $f"; exit 1; }
+  done
+  [ -e "$X11ROOT/usr/lib/libX11.so.6" ] || ln -sf libX11.so "$X11ROOT/usr/lib/libX11.so.6"
+  ls -l "$X11ROOT/usr/lib"/libX*.so* 2>/dev/null | head -20 || true
+fi
+
 log "3/5 交叉配置 aarch64-linux-android"
 export CC="$TOOLCHAIN/bin/aarch64-linux-android${ANDROID_API}-clang"
 export CXX="$TOOLCHAIN/bin/aarch64-linux-android${ANDROID_API}-clang++"
@@ -138,7 +168,16 @@ export AR="$TOOLCHAIN/bin/llvm-ar"
 export RANLIB="$TOOLCHAIN/bin/llvm-ranlib"
 export STRIP="$TOOLCHAIN/bin/llvm-strip"
 export NM="$TOOLCHAIN/bin/llvm-nm"
-export CPPFLAGS="--sysroot=$TOOLCHAIN/sysroot"
+if [ "${WITH_X:-0}" = "1" ]; then
+  export CPPFLAGS="--sysroot=$TOOLCHAIN/sysroot -I${X11_SYSROOT:-$WORK/x11sysroot}/usr/include -D__ANDROID_UNAVAILABLE_SYMBOLS_ARE_WEAK__"
+  # WINE_CHECK_SONAME 用 $READELF 反查 DT_NEEDED；交叉编译下 ldd 不可用
+  export READELF="$TOOLCHAIN/bin/llvm-readelf"
+  export LDD=true
+  # 用 LIBDIR（替换默认搜索路径）而不是 PATH，避免误吃主机的 X11 .pc
+  export PKG_CONFIG_LIBDIR="${X11_SYSROOT:-$WORK/x11sysroot}/usr/lib/pkgconfig:${X11_SYSROOT:-$WORK/x11sysroot}/usr/share/pkgconfig"
+else
+  export CPPFLAGS="--sysroot=$TOOLCHAIN/sysroot"
+fi
 export LDFLAGS="--sysroot=$TOOLCHAIN/sysroot"
 "$CC" --version | head -1
 
@@ -152,10 +191,10 @@ X_OPTS=()
 if [ "${WITH_X:-0}" = "1" ]; then
   X_OPTS+=( --with-x --with-xinput2 )
   if [ -n "${X11_SYSROOT:-}" ]; then
-    X_OPTS+=( --x-includes="$X11_SYSROOT/include" --x-libraries="$X11_SYSROOT/lib" )
-    export PKG_CONFIG_PATH="$X11_SYSROOT/lib/pkgconfig:$X11_SYSROOT/share/pkgconfig:${PKG_CONFIG_PATH:-}"
-    export CPPFLAGS="$CPPFLAGS -I$X11_SYSROOT/include"
-    export LDFLAGS="$LDFLAGS -L$X11_SYSROOT/lib -Wl,-rpath-link,$X11_SYSROOT/lib"
+    X_OPTS+=( --x-includes="$X11_SYSROOT/usr/include" --x-libraries="$X11_SYSROOT/usr/lib" )
+    export PKG_CONFIG_PATH="$X11_SYSROOT/usr/lib/pkgconfig:$X11_SYSROOT/usr/share/pkgconfig:${PKG_CONFIG_PATH:-}"
+    export CPPFLAGS="$CPPFLAGS -I$X11_SYSROOT/usr/include"
+    export LDFLAGS="$LDFLAGS -L$X11_SYSROOT/usr/lib -Wl,-rpath-link,$X11_SYSROOT/usr/lib"
     echo "WITH_X=1, X11_SYSROOT=$X11_SYSROOT"
   else
     echo "!! WITH_X=1 但没有 X11_SYSROOT：bionic 上必然找不到 libX11，configure 会失败"
@@ -173,6 +212,7 @@ TGT_OPTS=(
   --without-cups --without-dbus --without-gnutls
   --without-sane --without-usb --without-v4l2 --without-pcsclite
   --without-netapi --without-krb5 --without-gstreamer --without-opencl
+  --without-wayland --without-xinerama --without-xcomposite --without-xxf86vm
   --disable-win16 --disable-tests
 )
 TGT_PE_CC="$(command -v aarch64-w64-mingw32-clang || command -v aarch64-w64-mingw32-gcc || echo clang)"
@@ -184,6 +224,13 @@ if [ ! -f config.status ] || [ "$(cat .configure-opts 2>/dev/null || true)" != "
   fi
   stdbuf -oL -eL "$SRC/configure" "${TGT_OPTS[@]}" 2>&1 | stdbuf -oL -eL tee "$OUT/configure-android.log"
   echo "$TGT_OPTS_STR" > .configure-opts
+fi
+if [ "${WITH_X:-0}" = "1" ]; then
+  if grep -q "X .*development files not found" "$OUT/configure-android.log"; then
+    echo "!! configure 没认到 X11 ⇒ winex11.drv 不会构建"; exit 1
+  fi
+  grep -q "winex11.drv" "$TGTBUILD/Makefile" || { echo "!! Makefile 里没有 winex11.drv"; exit 1; }
+  echo "✓ configure 已接受 X11（winex11.drv 进入构建）"
 fi
 
 log "4/5 编译（这一步最久，CI 上约 20~60 分钟；日志实时滚动，不再 tail 缓冲）"

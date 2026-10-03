@@ -106,6 +106,7 @@ jobs:
             wine-work/wine
             wine-work/build-host
             wine-work/build-android
+            wine-work/x11sysroot
           key: wine-cache-${{ github.event.inputs.wine_ref || 'wine-11.0' }}-${{ hashFiles('scripts/ci_build_wine_android.sh') }}-run${{ github.run_id }}
 
       - name: 上传构建日志与产物
