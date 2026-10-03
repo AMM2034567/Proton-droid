@@ -144,11 +144,30 @@ export LDFLAGS="--sysroot=$TOOLCHAIN/sysroot"
 
 mkdir -p "$TGTBUILD" && cd "$TGTBUILD"
 # --disable-win16/--disable-tests 同上：Android 上不需要 Win16，也省时间。
+#
+# WITH_X=1 ⇒ 构建 winex11.drv（D/B' 路线：内嵌 X 服务器 + X11 后端，Vulkan 才能走 VK_KHR_xlib_surface）。
+# ⚠️ aarch64-linux-android 是 bionic，**没有系统 libX11** ⇒ 必须提供 X11 sysroot：
+#    用 Termux 的 bionic X11 包（aarch64 .deb）解出来的目录，路径通过 X11_SYSROOT 传入。
+X_OPTS=()
+if [ "${WITH_X:-0}" = "1" ]; then
+  X_OPTS+=( --with-x --with-xinput2 )
+  if [ -n "${X11_SYSROOT:-}" ]; then
+    X_OPTS+=( --x-includes="$X11_SYSROOT/include" --x-libraries="$X11_SYSROOT/lib" )
+    export PKG_CONFIG_PATH="$X11_SYSROOT/lib/pkgconfig:$X11_SYSROOT/share/pkgconfig:${PKG_CONFIG_PATH:-}"
+    export CPPFLAGS="$CPPFLAGS -I$X11_SYSROOT/include"
+    export LDFLAGS="$LDFLAGS -L$X11_SYSROOT/lib -Wl,-rpath-link,$X11_SYSROOT/lib"
+    echo "WITH_X=1, X11_SYSROOT=$X11_SYSROOT"
+  else
+    echo "!! WITH_X=1 但没有 X11_SYSROOT：bionic 上必然找不到 libX11，configure 会失败"
+  fi
+else
+  X_OPTS+=( --without-x )
+fi
 TGT_OPTS=(
   --host=aarch64-linux-android
   --with-wine-tools="$HOSTBUILD"
   --prefix="$PREFIX"
-  --without-x
+  "${X_OPTS[@]}"
   --without-freetype
   --without-alsa --without-pulse --without-oss --without-coreaudio
   --without-cups --without-dbus --without-gnutls
@@ -157,7 +176,7 @@ TGT_OPTS=(
   --disable-win16 --disable-tests
 )
 TGT_PE_CC="$(command -v aarch64-w64-mingw32-clang || command -v aarch64-w64-mingw32-gcc || echo clang)"
-TGT_OPTS_STR="${TGT_OPTS[*]} | pe=$TGT_PE_CC | ndk=$(basename "$TOOLCHAIN")"
+TGT_OPTS_STR="${TGT_OPTS[*]} | pe=$TGT_PE_CC | ndk=$(basename "$TOOLCHAIN") | x=${WITH_X:-0}"
 if [ ! -f config.status ] || [ "$(cat .configure-opts 2>/dev/null || true)" != "$TGT_OPTS_STR" ]; then
   if [ -f config.status ]; then
     echo "目标配置或工具链变化 ⇒ 清空 $TGTBUILD 重新 configure"

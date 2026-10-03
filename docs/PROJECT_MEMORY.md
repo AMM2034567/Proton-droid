@@ -1647,3 +1647,35 @@ wine+application"）。我们的 C 基线正是 **native aarch64 wine（PE 侧 A
 - CI 已触发 `master` 全量构建（run 37129679666，进行中）——按上述结论，**应改跑 `wine-11.11`**；
 - 我们手工补的 wine-11.0 路径（设备上已验证到"驱动活着、Java 桌面视图已建、尺寸通道通"）可作为
   B' 方案的对照基线保留。
+
+### 16.20 路线定案：走 D（B' 变体）—— native aarch64 wine + 内嵌 X + winex11.drv
+
+**用户 2026-10-03 决定**：按 D 路线开工（放弃继续投入 wineandroid.drv 作为显示层）。
+
+**为什么（一句话）**：C 方案（wineandroid.drv）**没有 Vulkan 路径**（`android_drv_funcs` 未设 `.pVulkanInit`；
+`winevulkan` loader 只有 `VK_KHR_win32_surface`）⇒ DXVK/D3D11/D3D12 无解；而现代/老游戏都依赖 Vulkan
+（老游戏走 DXVK-d3d9 / D8VK / wined3d+Zink），所以显示层必须落在能提供 `VK_KHR_xlib_surface` 的 X11 上。
+
+**D 路线的落地次序**：
+1. **CI 产出带 `winex11.drv` 的 native aarch64 (bionic) wine** ← 当前卡点
+2. App 走内嵌 X（`libXlorie.so`）+ winex11；用 Mali 修法救画面：
+   - **必须 `bcn_layer`**（Mali/Xclipse 无 BCn 支持会黑屏/显存爆）
+   - Winlator 的 X11 display server 硬编码 `HAL_PIXEL_FORMAT_BGRA_8888`，Mali 无法把该 AHB import 进 Vulkan
+     ⇒ 已知 hack：对驱动谎报 `R8B8G8A8`（物理仍 BGRA 序）+ **用 `vkCmdCopyImage` 而非 `vkCmdBlitImage`**
+   - 诊断口诀：**先开 `DXVK_LOG_LEVEL=info`**（hang 类问题必做）
+3. 之后再做 **Vulkan 隐式 layer + AHardwareBuffer + SurfaceControl** 直呈（照 Ludashi-Plus DAC /
+   GameNative ASurfaceRenderer），作为性能后端
+4. wine-11.11 的 C 方案（分离进程模型）只作**实验后端**，Vulkan 明确 out of scope
+
+**第 1 步的技术前提（已确认）**：`winex11.drv` 要链接 X11 客户端库，而 aarch64-linux-android 是 **bionic**
+（无系统 libX11）⇒ 需引入 **Termux 的 bionic X11 包**作为 sysroot 补充（aarch64 `.deb`），
+并在 configure 里把 `--without-x` 换成 `--with-x` + 指向该 sysroot 的 `PKG_CONFIG_PATH/CFLAGS/LDFLAGS`。
+已派子代理核实**最小必需库清单**（直接读 wine-11.11 的 `configure.ac` 与 `dlls/winex11.drv/Makefile.in`）、
+Termux 包名与下载 URL、以及 CI 的最小改动（≤6 处）。
+
+**老/新游戏兼容性（本路线）**：
+- D3D9→DXVK d3d9；D3D8→D8VK；D3D7/DDraw/更老→wined3d(GL/GLES)+Zink；现代→DXVK/VKD3D ✓
+- x86(32 位) 老游戏 → wine 的 wow64 后端换 **`wowbox64.dll`**（Hangover 做法）；x86_64 → **FEX/Box64**；
+  上游 xtajit 在 bionic 未验证，不作首选
+- Win16/DOS 时代 → 需 OTVDM/DOSBox（out of scope）；带反作弊的网游不支持
+- **Adreno 用户更有利**（Mesa Turnip）；Mali 需 `bcn_layer` + 格式修法

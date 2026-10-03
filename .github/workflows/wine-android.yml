@@ -13,6 +13,10 @@ on:
         description: 'Android API level（NDK 目标）'
         required: false
         default: '28'
+      with_x:
+        description: '1 = 构建 winex11.drv（D/B'' 路线：内嵌 X + X11，Vulkan 走 VK_KHR_xlib_surface；需要 bionic X11 sysroot）'
+        required: false
+        default: '0'
   push:
     tags:
       - 'wine-android-*'
@@ -81,6 +85,10 @@ jobs:
         env:
           WINE_REF: ${{ github.event.inputs.wine_ref || 'wine-11.0' }}
           ANDROID_API: ${{ github.event.inputs.api_level || '28' }}
+          # WITH_X=1 ⇒ 构建 winex11.drv（D/B' 路线：内嵌 X + X11 后端，Vulkan 才有 VK_KHR_xlib_surface）。
+          # 需要 X11 sysroot（bionic）：由 WITH_X=1 时前面的步骤下载 Termux X11 包解出，路径走 X11_SYSROOT。
+          WITH_X: ${{ github.event.inputs.with_x || '0' }}
+          X11_SYSROOT: ${{ github.workspace }}/x11-sysroot
           JOBS: '4'
         run: |
           # 兜底：确保脚本是 LF（Windows 检出可能带 CRLF）
