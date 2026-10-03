@@ -86,7 +86,13 @@ object WineAndroidPayload {
             }
         }
 
-        onProgress("解包 ${local.name}（${local.length() / 1048576} MB）…")
+        // 解压后是 ~1.17GB（2539 文件 + 若干符号链接），先看设备空间够不够，别解到一半失败留下半棵树
+        val needBytes = 1_300L * 1024 * 1024
+        val freeBytes = context.filesDir.usableSpace
+        onProgress("解包 ${local.name}（${local.length() / 1048576} MB，展开后约 1.17GB）")
+        check(freeBytes <= 0 || freeBytes > needBytes) {
+            "应用私有目录空间不足：可用 ${freeBytes / 1048576}MB，需要约 ${needBytes / 1048576}MB"
+        }
         extractTarGz(local, context.filesDir) { done ->
             if (done % 256 == 0L) onProgress("已解出 $done 个文件…")
         }
@@ -214,7 +220,32 @@ object WineAndroidPayload {
                         onProgress(entries)
                         skipPadding(input, size)
                     }
-                    else -> {  // 符号链接/其他类型：跳过数据
+                    '2' -> {   // 符号链接：载荷里是 bin/<工具> -> wine（winecfg/wineboot/notepad/…共 12 个）
+                        val linkName = String(header, 157, 100, Charsets.UTF_8).substringBefore('\u0000')
+                        val target = File(destRoot, name.trimStart('.', '/'))
+                        if (target.canonicalPath.startsWith(destCanonical)) {
+                            target.parentFile?.mkdirs()
+                            val linked = try {
+                                java.nio.file.Files.createSymbolicLink(
+                                    target.toPath(), java.nio.file.Paths.get(linkName)
+                                )
+                                true
+                            } catch (e: Exception) {
+                                false
+                            }
+                            if (!linked) {
+                                // 文件系统不支持软链时退化为复制被指向的文件（例如 bin/winecfg ← bin/wine）
+                                val src = File(target.parentFile, linkName)
+                                if (src.isFile) src.copyTo(target, overwrite = true)
+                            } else if (EXECUTABLE_PREFIXES.any {
+                                    target.relativeTo(destRoot).path.replace('\\', '/').startsWith(it)
+                                }) {
+                                target.setExecutable(true, false)
+                            }
+                        }
+                        skipPadding(input, size)
+                    }
+                    else -> {  // 其它类型（硬链接/设备节点等）：跳过数据
                         var left = size
                         val buf = ByteArray(1 shl 16)
                         while (left > 0) {

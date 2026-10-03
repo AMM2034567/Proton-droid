@@ -1172,9 +1172,23 @@ adb logcat -s WineAndroidPayload:* wine:* DEBUG:*
 `desktop_changed: WxH` / `create desktop view` → `onSurfaceTextureAvailable` + `got buffer … fence`；
 **不能出现** `The graphics driver is missing`（drv 加载失败）与 `failed to load gralloc module`（走 bits 回退）。
 
-**两个「写注释把自己写死」的坑（各烧掉一次 CI）**：
-1. **XML 注释里不能出现连续两个减号** ⇒ 我在 manifest 注释里写了 adb 参数示例 `--es`，直接
+**两个「写注释把自己写死」的坑（各烧掉一次 CI）**：1. **XML 注释里不能出现连续两个减号** ⇒ 我在 manifest 注释里写了 adb 参数示例 `--es`，直接
    `SAXParseException: The string "--" is not permitted within comments`（`:app:processDebugMainManifest` 挂）。
    **改完 manifest 先在本地 `[xml](Get-Content -Raw …)` 校验再推。**
 2. **Kotlin 的块注释可以嵌套**（与 Java 不同！）⇒ 文件头 KDoc 里写了 `…/*.dll` 和 `share/wine/**`，
    其中的 `/*` 会开启嵌套注释，末尾一个 `*/` 只关掉内层 ⇒ `e: Unclosed comment`。**注释里别写 `/*`。**
+
+**载荷事实（实测 `cache/run12` 的 install tar）**：解压后 **1167MB**；2539 文件 + 23 目录 + **12 个软链**
+（`bin/{winecfg,wineboot,winedbg,winepath,winefile,notepad,regsvr32,msiexec,msidb,winemine,wineconsole,regedit} -> wine`）。
+tar 里**没有** GNU 长名 / PAX / ustar prefix（最长文件名 92 字符）⇒ 自写 reader 走简单路径就够；
+`WineAndroidPayload` 已补：软链创建（不支持则退化为复制 `bin/wine`）+ 解压前空间检查（需 ~1.3GB 可用）。
+
+**本地验证流程（别再拿 CI 当编译器）**：
+```powershell
+cd D:\cargoproject\Proton-droid
+$env:GRADLE_USER_HOME="$PWD\.gradle-home"
+$env:JAVA_HOME="D:\jdk-17.0.20.101-hotspot"
+.\gradlew.bat :app:compileDebugKotlin --offline --console=plain   # 30 秒级，验 Kotlin/manifest
+.\gradlew.bat :app:assembleDebug     --offline --console=plain   # 出 app/build/outputs/apk/debug/app-debug.apk（16.3MB）
+```
+已核验：`WineActivity`（javac）与 `WineAndroidPayload`（Kotlin）都在 APK 的 DEX 里（`classes5/6.dex`）。
