@@ -23,6 +23,11 @@ PREFIX="$OUT/wine-android-arm64"
 
 log() { echo -e "\n=== $* ==="; }
 
+# 必须在任何 cd 之前算好绝对路径：run #6 就是因为在 cd "$SRC" 之后才用相对 $BASH_SOURCE 拼
+# ./scripts（那时 CWD 已在 wine 源码树里）⇒ `cd ./scripts` 失败 ⇒ set -e 直接退出，连日志都没留下。
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PATCH_DIR="$SCRIPT_DIR/patches"
+
 [ -d "$TOOLCHAIN" ] || { echo "!! 找不到 NDK toolchain: $TOOLCHAIN"; ls -d "${ANDROID_HOME:-/usr/local/lib/android/sdk}"/ndk/* 2>/dev/null || true; exit 1; }
 command -v gradle >/dev/null || echo "!! 警告: PATH 里没有 gradle，APK 目标会失败（wine configure 会直接报错）"
 
@@ -37,19 +42,21 @@ fi
 cd "$SRC" && git log --oneline -1
 
 log "1.5/5 给 wine 打本地补丁（wineandroid.drv 与 wine-11.0 内部接口漂移）"
-# wineandroid.drv 在上游多年无人编译，接口已与 wine-11.0 漂移（详见 scripts/patches/ 里的说明与记忆 §16.6）。
+# wineandroid.drv 在上游多年无人编译，接口已与 wine-11.0 漂移（详见记忆 §16.6 与补丁注释）。
 # 幂等：先把它复位到 pristine（缓存恢复的源码树可能已经打过补丁），再逐个 apply。
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PATCH_DIR="$SCRIPT_DIR/patches"
 if ls "$PATCH_DIR"/*.patch >/dev/null 2>&1; then
-  git -C "$SRC" checkout -- dlls/ 2>/dev/null || true
+  git -C "$SRC" checkout -- dlls/ || echo "!! checkout dlls/ 失败（继续尝试 apply）"
   for p in "$PATCH_DIR"/*.patch; do
     echo "--- apply $(basename "$p")"
-    git -C "$SRC" apply --verbose "$p"
+    if ! git -C "$SRC" apply --verbose "$p"; then
+      echo "!! 补丁应用失败: $p"
+      echo "!! git status:"; git -C "$SRC" status --porcelain | head -20
+      exit 1
+    fi
   done
   git -C "$SRC" diff --stat
 else
-  echo "(没有补丁，跳过)"
+  echo "(没有补丁，跳过；PATCH_DIR=$PATCH_DIR)"
 fi
 
 log "2/5 构建 host 工具（x86_64 linux，跨编译需要 winebuild/widl/winegcc 以及 tools/wine/wine）"
