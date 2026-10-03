@@ -20,8 +20,8 @@ import java.util.zip.GZIPInputStream
  *
  *   <filesDir>/arm64-v8a/bin/{wine,wineserver}            ← get_wine_abi() 判据：<abi>/bin/wineserver 可执行
  *   <filesDir>/arm64-v8a/lib/wine/aarch64-unix/ntdll.so   ← System.load(...) 的目标
- *   <filesDir>/arm64-v8a/lib/wine/aarch64-windows/*.dll   ← PE 侧（WINEDLLPATH=<libdir>/wine）
- *   <filesDir>/share/wine/**                              ← wine 数据文件
+ *   <filesDir>/arm64-v8a/lib/wine/aarch64-windows 目录    ← PE 侧 DLL（WINEDLLPATH=<libdir>/wine）
+ *   <filesDir>/share/wine 目录                            ← wine 数据文件
  *
  * 注意：WineActivity 只在自己那套 assets/`files.sum`+`sums.sum` 存在时才做 assets 解包；
  * 找不到 `sums.sum` 会直接 return（readMapFromAssetFile 捕获 IOException 返回空 Map），

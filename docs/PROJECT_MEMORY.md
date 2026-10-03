@@ -1171,3 +1171,10 @@ adb logcat -s WineAndroidPayload:* wine:* DEBUG:*
 **验收判据（§16.7 第 6 条）**：`System.load(…/aarch64-unix/ntdll.so)` 成功 → logcat 出现
 `desktop_changed: WxH` / `create desktop view` → `onSurfaceTextureAvailable` + `got buffer … fence`；
 **不能出现** `The graphics driver is missing`（drv 加载失败）与 `failed to load gralloc module`（走 bits 回退）。
+
+**两个「写注释把自己写死」的坑（各烧掉一次 CI）**：
+1. **XML 注释里不能出现连续两个减号** ⇒ 我在 manifest 注释里写了 adb 参数示例 `--es`，直接
+   `SAXParseException: The string "--" is not permitted within comments`（`:app:processDebugMainManifest` 挂）。
+   **改完 manifest 先在本地 `[xml](Get-Content -Raw …)` 校验再推。**
+2. **Kotlin 的块注释可以嵌套**（与 Java 不同！）⇒ 文件头 KDoc 里写了 `…/*.dll` 和 `share/wine/**`，
+   其中的 `/*` 会开启嵌套注释，末尾一个 `*/` 只关掉内层 ⇒ `e: Unclosed comment`。**注释里别写 `/*`。**
