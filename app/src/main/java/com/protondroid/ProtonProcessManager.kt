@@ -178,6 +178,14 @@ class ProtonProcessManager(private val context: Context) {
             "$proton/files/lib"
         ).joinToString(":")
 
+        // 调试开关：若存在 files/wine_debug.txt，则用其内容作为 WINEDEBUG（免重编排查用）
+        val wineDebug = try {
+            val f = File(context.filesDir, "wine_debug.txt")
+            if (f.isFile) f.readText().trim().ifEmpty { "-all" } else "-all"
+        } catch (e: Exception) {
+            "-all"
+        }
+
         return arrayOf(
             // --- PRoot 运行期 ---
             "PROOT_LOADER=${layout.prootLoader.absolutePath}",
@@ -200,7 +208,7 @@ class ProtonProcessManager(private val context: Context) {
             "FEX_TSOENABLED=1",
             "FEX_MULTIBLOCK=1",
             "FEX_MAXINST=500",
-            "WINEDEBUG=-all",
+            "WINEDEBUG=$wineDebug",
             "WINE_LARGE_ADDRESS_AWARE=1",
             "WINEDLLOVERRIDES=d3d11=n,b;dxgi=n,b;d3d9=n,b;d3d10core=n,b;d3d12=n,b",
             "DXVK_ENABLE_NVAPI=0",

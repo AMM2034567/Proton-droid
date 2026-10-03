@@ -362,12 +362,19 @@ git -c credential.helper= -c http.proxy=http://127.0.0.1:10809 `
 5. ✅ **真机验证完成**：X 服务器启动 → wine 建出 `ProtonDroid - Wine Desktop` 窗口（窗口树证据）
    → SurfaceView 出画面（X 光标可见）。细节见 §8.2 第 5 条的实测日志。
 6. 🔄 **当前卡点：游戏进程立即退出（退出码 0）**。wine 与 X 都正常，是应用层问题。
-   下一步排查方向（按成本排序）：
-   a. 打开 `WINEDEBUG=err+all,warn+all`（或 `+seh,+module,+loaddll`）看游戏退出原因（现在被 `-all` 吞掉了）；
-   b. 用 `wine cmd /c ver`、`wine notepad`、`wine winecfg` 逐步确认 wine 自身功能；
-   c. osu! 是 .NET 程序：确认 prefix 里 mono/gecko/wine-mono 是否就绪（`files/share/wine/mono`），
-      必要时先换 `goose/GooseDesktop.exe` 或更简单的 win32 程序验证；
-   d. 确认 FEX（`libwow64fex.so`/`libarm64ecfex.so`）对 x86_64 PE 的加载路径与 `FEX_APP_CONFIG_LOCATION`。
+   **2026-10-04 进展：已定位为游戏自身的更新器 + 网络问题，并已成功跑起 osu!**
+   - 证据：打开 `WINEDEBUG=err+all,warn+all` 后，wine 的 X11 驱动完全正常
+     （`X11DRV_InitKeyboard` / `xrandr` / `x11drv:get_work_area`），仅 4 条无害错误；
+     osu! 自己的 `Logs/update.log` 显示它在 `Requesting update information...` 卡住，
+     约 10 分钟后 `Force update requested` 然后退出（此前一次是 `NameResolutionFailure`）。
+   - guest 网络实测正常：`osu.ppy.sh` DNS 解析 ✓、TCP 443 ✓、HTTPS 返回 200（RTT ~5s，较慢）。
+   - **网络恢复后 osu! 成功启动并渲染**：进程树出现 `osu!.exe`，窗口树有
+     `ProtonDroid - Wine Desktop`（蓝色 = wine 默认桌面底色）+ 鼠标指针，
+     真机截图上能看到 **osu! 启动 logo**。即整条链路（PRoot → Proton → wine X11 → 内嵌 X 服务器 → EGL → SurfaceView）已通电。
+   - 结论：早期"立即退出"是更新器在无网/慢网下放弃导致的，不是运行时缺陷。
+   - 调试开关：往 `files/wine_debug.txt` 写 `err+all,warn+all` 即可改变 WINEDEBUG（免重编）；
+     默认 `-all`。
+   - 下一步：让 osu! 完成更新（或换无更新器的 goose 对照）、确认稳定帧率、记录性能基线。
 6. ⬜ 记录性能基线（帧率、CPU/GPU 占用），作为 C 方案的对比依据。
 7. ⬜ GPL 合规三件套（LICENSE + `licenses/` + App 内开源许可页），见 `docs/THIRD_PARTY_NOTICES.md`。
 
