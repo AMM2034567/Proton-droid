@@ -242,8 +242,8 @@ class MainActivity : AppCompatActivity() {
             tvRuntimeStatus.setTextColor(0xFFFF9800.toInt())
         }
 
-        val x11 = NativeBridge.checkX11Display(0)
-        tvGpuStatus.append(if (x11) "\nX11 显示 :0: 已连接" else "\nX11 显示 :0: 未检测到 (需 Termux-X11)")
+        val x11 = com.protondroid.display.XServer.isDisplayReachable()
+        tvGpuStatus.append(if (x11) "\nX11 显示 :0: 已连接" else "\nX11 显示 :0: 未启动 (进入游戏页会自动拉起内嵌 X 服务器)")
     }
 
     private fun scanGames() {

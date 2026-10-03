@@ -4,6 +4,7 @@ import android.content.Context
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
+import com.protondroid.display.XServer
 import com.protondroid.runtime.ProtonLayout
 import com.protondroid.runtime.ProtonRuntimeInstaller
 import com.protondroid.runtime.WinePrefix
@@ -87,8 +88,9 @@ class ProtonProcessManager(private val context: Context) {
         }
         val guestWorkDir = guestGamePath.substringBeforeLast('/', "/root").ifEmpty { "/root" }
 
-        // X 服务器现在是内嵌硬前置：GameViewActivity 会先拉起 libXlorie 再启动游戏
-        if (!NativeBridge.checkX11Display(0)) {
+        // X 服务器现在是内嵌的硬前置：GameViewActivity 会先拉起 libXlorie 再启动游戏。
+        // 内嵌服务器的 socket 在 $TMPDIR/.X11-unix 下（不是 /tmp），所以要按实际路径探测。
+        if (!XServer.isDisplayReachable()) {
             report("错误: X 服务器 (DISPLAY=:0) 未就绪，无法创建游戏窗口")
             return false
         }
@@ -148,6 +150,10 @@ class ProtonProcessManager(private val context: Context) {
         args += listOf("-b", "/dev:/dev")
         args += listOf("-b", "/proc:/proc")
         args += listOf("-b", "/sys:/sys")
+
+        // 内嵌 X 服务器的 socket 位于 $TMPDIR/.X11-unix（App 私有目录），
+        // bind 到 guest 的 /tmp，wine 才能按标准路径 /tmp/.X11-unix/X0 连上
+        args += listOf("-b", "${layout.tmpDir.absolutePath}:/tmp")
 
         // Proton 载荷编译期数据目录是 /usr/share/wine，运行期必须 bind 过去，
         // 否则 wineserver 会报 “failed to load l_intl.nls” 并直接崩溃。

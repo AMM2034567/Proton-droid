@@ -88,6 +88,7 @@ public class LorieView extends SurfaceView implements SurfaceHolder.Callback {
         connectToServer();
         if (mNativeContext != 0L && mSurface != null) {
             surfaceChanged(mNativeContext, mSurface);
+            updateScreenSize(getWidth(), getHeight(), true);
         }
         requestFocus();
         if (surfaceReadyListener != null) surfaceReadyListener.run();
@@ -98,7 +99,7 @@ public class LorieView extends SurfaceView implements SurfaceHolder.Callback {
         mSurface = holder.getSurface();
         if (mNativeContext == 0L || mSurface == null) return;
         surfaceChanged(mNativeContext, mSurface);
-        updateScreenSize(width, height);
+        updateScreenSize(width, height, true);
     }
 
     @Override
@@ -135,7 +136,7 @@ public class LorieView extends SurfaceView implements SurfaceHolder.Callback {
         if (mSurface == null || mNativeContext == 0L) return;
         connectToServer();
         surfaceChanged(mNativeContext, mSurface);
-        updateScreenSize(getWidth(), getHeight());
+        updateScreenSize(getWidth(), getHeight(), true);
     }
 
     // ------------------------------------------------------------------
@@ -143,13 +144,25 @@ public class LorieView extends SurfaceView implements SurfaceHolder.Callback {
     // ------------------------------------------------------------------
 
     private void updateScreenSize(int width, int height) {
+        updateScreenSize(width, height, false);
+    }
+
+    /**
+     * 重新下发 X 屏幕尺寸与 viewport。
+     *
+     * 关键：native 的 `Renderer::setWindow()` 会执行 `expectedW = expectedH = 0`，
+     * 而每次 `surfaceChanged(ptr, surface)` 都会走这条路 —— 所以 **每次换 Surface 之后
+     * 必须重新调用 setViewport**，否则渲染器会一直报
+     * "Buffer N is not of expected size, expecting 0x0" 并丢弃所有帧（画面全黑）。
+     */
+    private void updateScreenSize(int width, int height, boolean force) {
         if (mNativeContext == 0L || width <= 0 || height <= 0) return;
 
         int granularity = 8; // libxcvt 水平方向粒度
         int alignedWidth = Math.max(granularity, Math.max(64, width - width % granularity));
         int alignedHeight = Math.max(64, height);
 
-        if (p.x == alignedWidth && p.y == alignedHeight) return;
+        if (!force && p.x == alignedWidth && p.y == alignedHeight) return;
         p.set(alignedWidth, alignedHeight);
 
         int framerate = (getDisplay() != null) ? (int) getDisplay().getRefreshRate() : 60;

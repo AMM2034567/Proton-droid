@@ -60,7 +60,7 @@ class GameViewActivity : AppCompatActivity() {
         }
 
         // 1) 先拉起内嵌 X 服务器，保证 LorieView 能拿到控制通道 fd
-        if (XServer.ensureStarted()) {
+        if (XServer.ensureStarted(this)) {
             appendStatus("内嵌 X 服务器 (DISPLAY=:${XServer.DISPLAY}) 已就绪")
         } else {
             appendStatus("错误: 内嵌 X 服务器启动失败 (libXlorie.so)")

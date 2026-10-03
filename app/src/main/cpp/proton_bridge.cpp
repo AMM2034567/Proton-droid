@@ -181,6 +181,34 @@ Java_com_protondroid_NativeBridge_forkAndExec(
 }
 
 /**
+ * 探测任意路径的 unix socket 是否可连接。
+ * 内嵌 libXlorie 的 X socket 位于 App 私有目录（$TMPDIR/.X11-unix/X<n>），不在 /tmp。
+ */
+JNIEXPORT jboolean JNICALL
+Java_com_protondroid_NativeBridge_checkUnixSocket(JNIEnv *env, jobject /* this */, jstring path) {
+    const char *p = env->GetStringUTFChars(path, nullptr);
+    if (p == nullptr) return JNI_FALSE;
+
+    struct sockaddr_un addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sun_family = AF_UNIX;
+    bool ok = false;
+
+    if (strlen(p) < sizeof(addr.sun_path)) {
+        strncpy(addr.sun_path, p, sizeof(addr.sun_path) - 1);
+        int fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
+        if (fd >= 0) {
+            ok = connect(fd, reinterpret_cast<struct sockaddr *>(&addr), sizeof(addr)) == 0;
+            close(fd);
+        }
+    }
+
+    env->ReleaseStringUTFChars(path, p);
+    LOGI("checkUnixSocket = %d", ok ? 1 : 0);
+    return ok ? JNI_TRUE : JNI_FALSE;
+}
+
+/**
  * 探测本地 X11 显示是否可达（Termux-X11 监听的是抽象 unix socket，
  * 抽象 socket 不经过文件系统权限检查，因此任意应用都可作为 X 客户端连接）。
  */

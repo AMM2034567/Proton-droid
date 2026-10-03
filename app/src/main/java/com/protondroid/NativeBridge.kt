@@ -9,8 +9,11 @@ object NativeBridge {
 
     external fun checkGpuNodeAccess(): Boolean
 
-    /** 检测 X11 显示是否可达（Termux-X11 的抽象 socket） */
+    /** 检测 X11 显示是否可达（抽象 socket + /tmp 路径，用于外部 X 服务器如 Termux-X11） */
     external fun checkX11Display(display: Int): Boolean
+
+    /** 检测指定路径的 unix socket 是否可连接（内嵌 libXlorie 的 socket 位于 App 私有目录） */
+    external fun checkUnixSocket(path: String): Boolean
 
     /**
      * fork + execve。
