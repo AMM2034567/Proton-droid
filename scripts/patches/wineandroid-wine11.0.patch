@@ -23,3 +23,20 @@ diff --git a/dlls/wineandroid.drv/dllmain.c b/dlls/wineandroid.drv/dllmain.c
      return !ANDROID_CALL( init, &params );
  }
 \ No newline at end of file
+
+diff --git a/dlls/wineandroid.drv/opengl.c b/dlls/wineandroid.drv/opengl.c
+--- a/dlls/wineandroid.drv/opengl.c
++++ b/dlls/wineandroid.drv/opengl.c
+@@ -77,9 +77,9 @@ static void android_drawable_destroy( struct opengl_drawable *base )
+ 
+ void update_gl_drawable( HWND hwnd )
+ {
+-    /* clear any cached opengl drawable */
+-    set_window_opengl_drawable( hwnd, NULL, TRUE );
+-    set_window_opengl_drawable( hwnd, NULL, FALSE );
++    /* Since wine 11.0 the cached opengl drawables are maintained by win32u:
++     * set_window_opengl_drawable() is now static in dlls/win32u/opengl.c and thus
++     * not visible to drivers, so only invalidate the window here. */
+     NtUserRedrawWindow( hwnd, NULL, 0, RDW_INVALIDATE | RDW_ERASE );
+ }
+ 

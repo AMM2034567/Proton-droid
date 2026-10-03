@@ -1110,6 +1110,9 @@ E6 去掉虚拟桌面包装，直接 `wine dxvk_probe.exe`。
 
 | #7 | 2m00s | ❌ host 侧 clang ICE **搬到 x86_64-windows PE**：`dlls/msvcp100/x86_64-windows/{ios,locale}.o`（wine msvcp90 的内联汇编 RTTI `@__asm_dummy_..._rtti` 把 clang 18.1.3 的 X86 Assembly Printer 搞崩） | `--enable-archs=x86_64` 只挡住 i386，挡不住 x86_64。根因：wine-11.0 `configure.ac` 的 PE 编译器是**自动探测**——`x86_64-w64-mingw32-gcc` → `amd64-w64-mingw32-gcc` → `…-clang` → `clang`（`--enable-sast` 才会默认 clang），我们没装 mingw ⇒ 落到 `/usr/bin/clang` 18.1.3 ⇒ ICE。修法：workflow 里 apt 装 **`gcc-mingw-w64-x86-64`**，脚本顶部也打印选中的 PE 编译器作为证据。附：host 工具守卫按预期生效（`!! host 工具缺失: tools/wine/wine` → exit 1），run #7 的 artifact 只有 23KB（纯日志，无 tar，符合预期） |
 
+| #9 | 39m27s | ❌ 目标侧 `opengl.c:81` 调用 `set_window_opengl_drawable` 未声明 | **host 侧首次全绿**（`host make 退出码: 0`，mingw 修好了 clang ICE；host 全新 configure 到 make 完成约 17 分钟）→ 3/5 交叉 configure ✓ → 4/5 目标编译 9 分钟后崩。根因：`set_window_opengl_drawable()` 在 wine-11.0 里是 **`dlls/win32u/opengl.c` 的 static 函数**（驱动不可见；master 才挪到 `include/wine/opengl_driver.h`，所以代码搜索会误导），而 winex11 在 11.0 里也已无 `update_gl_drawable`（缓存 drawable 由 win32u 自己维护）。且 wineandroid 的 `update_gl_drawable()` **在驱动内零调用者**（纯死代码）⇒ 修法：函数体只留 `NtUserRedrawWindow(...)`，删掉两行不可见的调用。**已验证**：`android.h`/`dllmain.c`/`opengl.c` 三个文件之外，驱动的 `device.o`/`init.o`/`keyboard.o`/`window.o` 都编过了 ⇒ 补丁后应能编完整个驱动。缓存：run #9 的 save 步骤成功，`build-android` 部分产物已入缓存 ⇒ run #10 是增量 |
+| #10 | 运行中 | 补丁 v2（3 处漂移）| 预期：增量编译 → 链接 → `make install` → 安装树产物 |
+
 **CI 用法**：`gh workflow run "wine-android.yml" -f wine_ref=wine-11.0 -f api_level=28 --ref main`；
 日志 `gh run view <id> --log > cache\ci-wine-N.log`；产物 artifact = `wine-android-build`
 （现已含 `wine-out/*.log` 全部四个日志 + `artifacts/**`）。
