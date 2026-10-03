@@ -1375,3 +1375,33 @@ APK 侧改动（Java）不需要 CI，本地 `assembleDebug` + `adb install -r` 
    就查是谁调用的（前缀里 `HKCU\Software\Wine\Explorer\Desktop(s)` 残留值）；
 3. 补丁 v10（`dlls/win32u/driver.c`：win32u 在"键打不开/没值"时**直接兜底 wineandroid.drv**）已在本地提交
    `611db2d`，等网络恢复由后台任务 `pwsh-206` 推送并构建 —— 它会绕过注册表这一环。
+
+### 16.12 突破：驱动选择问题解决了（v10 兜底 + 前缀由 wineboot 先建）
+
+真机验证（`cache/wine-log20b.txt`，run 37125043802 的 v10 增量包）：
+```
+0034/0024:err:driver:load_desktop_driver win32u: no GraphicsDriver value for key
+    L"\Registry\Machine\System\CurrentControlSet\Control\Video\{18476b37-…}\0000",
+    falling back to wineandroid.drv
+```
+两点关键认知：
+1. **那个显示设备的 GUID 是每次运行随机生成的** ⇒ 任何"写死注册表键"的做法都不可能命中 ⇒
+   必须走 v10 的 win32u 兜底（`dlls/win32u/driver.c`：键打不开/没值时内置 `wineandroid.drv`）✓ **已验证生效**。
+2. **前缀必须由 wineboot 先建**：我们若在 `system.reg` 不存在时就自己造 `user.reg/system.reg`，
+   wine 会因为缺 `#arch=` 判定而报
+   `is a 64-bit installation, it cannot be used with a 32-bit wineserver`（真机踩过）。
+   已修：`ensure_android_driver_registry()` 在前缀没有 `system.reg` 时直接返回。
+   wineboot 建好后 `system.reg` 是 1.8MB / 38129 行（我们写的补丁只是追加一个节）。
+
+当前真机状态（2 轮启动后）：
+- App 进程存活，栈顶是 `WineActivity`，屏幕上是它自己的 **"Setting up the Windows environment…"** 进度框
+  （`wine_init` 会阻塞到主程序退出，所以这个框挂着是正常的）；
+- 进程树：`com.protondroid`(App) + `wineserver` + **`explorer.exe`（fork 出去的子进程，没有 JVM）**；
+- 该子进程就是 `0044` 那个报 `winemac/winex11/winewayland … Failed to load module` 并写 `DriverError` 的家伙。
+
+**下一步**：
+1. 确认主进程里驱动是否真的加载成功（`nodrv_CreateWindow` 是否消失、是否有 `wineandroid` 的窗口创建日志）；
+2. **处理 explorer 子进程**：它没有 JVM 必然失败并写 `DriverError`，需要让它不被启动
+   （前缀里 `HKCU\Software\Wine\Explorer` 的 `Desktop`/`ShellFolders`、或 wine 启动时自动拉 explorer 的路径），
+   否则它会持续污染显示设备的状态；
+3. 之后再看 `winecfg` 的窗口能否出现在 TextureView 上。

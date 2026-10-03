@@ -206,6 +206,15 @@ public class WineActivity extends Activity
      */
     private void ensure_android_driver_registry( File prefix )
     {
+        /* ⚠️ 只能在前缀已被 wineboot 创建之后写：system.reg 里 wineboot 写的 #arch= 标记
+           是 wine 判断"前缀位数"的依据；我们提前凭空造出 system.reg/user.reg 会让 wine 报
+           "is a 64-bit installation, it cannot be used with a 32-bit wineserver"（真机踩过）。
+           所以前缀不存在时直接返回，等 wineboot 建好、下一轮启动再写。 */
+        if (!new File( prefix, "system.reg" ).isFile())
+        {
+            Log.i( LOGTAG, "registry: 前缀尚未由 wineboot 创建，跳过 GraphicsDriver 写入" );
+            return;
+        }
         String bs = String.valueOf( new char[]{ 92, 92 } );   /* wine .reg 的分隔符：两个反斜杠 */
         String val = "\"GraphicsDriver\"=\"wineandroid.drv\"";
         prefix.mkdirs();
