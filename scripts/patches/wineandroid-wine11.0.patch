@@ -9,7 +9,33 @@ diff --git a/dlls/wineandroid.drv/android.h b/dlls/wineandroid.drv/android.h
  extern UINT ANDROID_OpenGLInit( UINT version, const struct opengl_funcs *opengl_funcs, const struct opengl_driver_funcs **driver_funcs );
  
  
-@@ -95,7 +94,7 @@ extern UINT ANDROID_ShowWindow( HWND hwnd, INT cmd, RECT *rect, UINT swp );
+@@ -62,6 +61,7 @@ extern UINT ANDROID_OpenGLInit( UINT version, const struct opengl_funcs *opengl_
+  */
+ 
+ extern void start_android_device(void);
++extern void ANDROID_InitDevice(void);
+ extern void register_native_window( HWND hwnd, struct ANativeWindow *win, BOOL client );
+ extern struct ANativeWindow *create_ioctl_window( HWND hwnd, BOOL opengl, float scale );
+ extern struct ANativeWindow *grab_ioctl_window( struct ANativeWindow *window );
+@@ -87,7 +87,16 @@ extern void ANDROID_SetCursor( HWND hwnd, HCURSOR handle );
+ extern BOOL ANDROID_CreateDesktop( const WCHAR *name, UINT width, UINT height );
+ extern BOOL ANDROID_CreateWindow( HWND hwnd );
+ extern void ANDROID_DestroyWindow( HWND hwnd );
+-extern BOOL ANDROID_ProcessEvents( DWORD mask );
++extern void ANDROID_InitDevice(void)
++{
++    if (desktop_tid) return;   /* 幂等 */
++    /* 设备线程 + Java 桌面视图要尽早起来：这样 Java 报来的屏幕尺寸能在主程序建窗之前
++     * 被 init_monitors() 采用。否则窗口会以 0 尺寸建出来（真机实测：窗口高度 0、屏幕全黑）。 */
++    init_event_queue();
++    start_android_device();
++}
++
++BOOL ANDROID_ProcessEvents( DWORD mask );
+ extern LRESULT ANDROID_DesktopWindowProc( HWND hwnd, UINT msg, WPARAM wp, LPARAM lp );
+ extern void ANDROID_SetParent( HWND hwnd, HWND parent, HWND old_parent );
+ extern void ANDROID_SetCapture( HWND hwnd, UINT flags );
+@@ -95,7 +104,7 @@ extern UINT ANDROID_ShowWindow( HWND hwnd, INT cmd, RECT *rect, UINT swp );
  extern LRESULT ANDROID_WindowMessage( HWND hwnd, UINT msg, WPARAM wp, LPARAM lp );
  extern BOOL ANDROID_WindowPosChanging( HWND hwnd, UINT swp_flags, BOOL shaped, const struct window_rects *rects );
  extern BOOL ANDROID_CreateWindowSurface( HWND hwnd, BOOL layered, const RECT *surface_rect, struct window_surface **surface );
@@ -22,7 +48,7 @@ diff --git a/dlls/wineandroid.drv/android.h b/dlls/wineandroid.drv/android.h
 diff --git a/dlls/wineandroid.drv/dllmain.c b/dlls/wineandroid.drv/dllmain.c
 --- a/dlls/wineandroid.drv/dllmain.c
 +++ b/dlls/wineandroid.drv/dllmain.c
-@@ -120,9 +120,17 @@ BOOL WINAPI DllMain( HINSTANCE inst, DWORD reason, LPVOID reserved )
+@@ -120,9 +120,25 @@ BOOL WINAPI DllMain( HINSTANCE inst, DWORD reason, LPVOID reserved )
      if (reason != DLL_PROCESS_ATTACH) return TRUE;
  
      DisableThreadLibraryCalls( inst );
@@ -39,9 +65,17 @@ diff --git a/dlls/wineandroid.drv/dllmain.c b/dlls/wineandroid.drv/dllmain.c
 +    params.start_device_callback = (UINT64)(UINT_PTR)android_start_device;
 +    {
 +        NTSTATUS status = ANDROID_CALL( init, &params );
-+        if (status) ERR( "wineandroid: unix init returned %#x\n", (unsigned int)status );
-+        return !status;
++        if (status)
++        {
++            ERR( "wineandroid: unix init returned %#x\n", (unsigned int)status );
++            return FALSE;
++        }
 +    }
++    /* 尽早把设备线程与 Java 桌面视图起来：屏幕尺寸要赶在主程序建窗之前就绪。
++     * 放在 DllMain 里比"首个窗口"更早（上游是首个窗口时才做，Android 上太晚）。 */
++    ANDROID_InitDevice();
++    return TRUE;
++
  }
 \ No newline at end of file
 
