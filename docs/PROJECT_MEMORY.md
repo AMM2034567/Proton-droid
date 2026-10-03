@@ -1433,3 +1433,37 @@ APK 侧改动（Java）不需要 CI，本地 `assembleDebug` + `adb install -r` 
 - 驱动选择：v10 win32u 兜底（显示设备 GUID **每次运行随机**，写死注册表键不可能命中）
 - 前缀：必须由 wineboot 先建（否则 wine 报 32-bit wineserver arch 不匹配）
 - 目标程序 = 主程序（同进程、有 JVM）；explorer 等 fork 子进程天然不可用
+
+### 16.14 C2 打通：从"驱动起不来"到"桌面视图就位、等待渲染"
+
+补丁 v11 真机结果（`cache/wine-log28.txt` + logcat）：
+```
+I/wine: create desktop view 00010020        ← 驱动回调 Java，TopView 创建成功（上游 Java 的 create_desktop_window）
+I/wine: report desktop size 2294x1032       ← 我们补的主动上报
+I/wine: fallback report desktop size 2294x1032
+wine: 0024:trace:android:process_events DESKTOP_CHANGED 2294x1032
+wine: 0024:trace:android:process_events CONFIG_CHANGED dpi 480
+```
+⇒ **全链路第一次跑通**：驱动加载(v10) → 事件队列+设备线程(v11) → Java 桌面视图 → 尺寸/DPI 回送 → 驱动处理事件。
+屏幕表现：进度框消失（`progress_dialog.dismiss()` 被调用）、变成 **TopView 的黑屏**。
+
+**至此 C 方案已跨过的所有坎（每一条都有真机证据）**：
+1. 载荷安装 + 装载器可执行位
+2. `wineandroid.drv` 初始化（导出 `java_vm`/`java_object`/`java_gdt_sel`）
+3. 线程断言（`wait_events/process_events`）
+4. 事件队列/设备线程的初始化顺序
+5. `ANDROID_CreateDesktop` 返回 TRUE
+6. 驱动选择（win32u 兜底 `wineandroid.drv`；显示设备 GUID 每次随机）
+7. 前缀由 wineboot 先建（否则 32-bit wineserver arch 报错）
+8. 主程序必须是目标程序（fork 子进程没有 JVM）
+9. 设备线程/Java 桌面视图改为首个窗口就启动；尺寸主动上报
+
+**当前状态 = 黑屏（TopView 已就位，但没有内容画出来）**，wine 日志停在第 817 行（`CONFIG_CHANGED`）
+⇒ 主程序 `winecfg.exe` 还没把可见窗口/表面画出来。
+
+**下一步**：
+1. 看 Java 侧有没有 `create window`/`wine_surface_changed` 的日志（上游 Java 的 `create_window`/`wine_surface_changed`
+   负责给每个 HWND 建 `WineWindow` + SurfaceView ✓ 这是像素来源）；
+2. 驱动侧 `+android` 里 `create_ioctl_window` 之后是否卡在等 Java 的 ioctl 返回（device.c 的 app_ioctl 往返）；
+3. 若窗口没建：查 `winecfg.exe`（主程序）为何停在窗口创建前——可以临时把主程序换成更简单的
+   `notepad.exe`/`winemine.exe` 看是否出画面，以区分"驱动渲染问题"还是"winecfg 自身问题"。
