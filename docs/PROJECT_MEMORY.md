@@ -1045,4 +1045,17 @@ E6 去掉虚拟桌面包装，直接 `wine dxvk_probe.exe`。
 3. C2 出画后：接 DXVK + vulkaninfo 验证 `VK_KHR_android_surface`（C3），必要时用 llvm-mingw 编
    ARM64 Windows PE 版 DXVK 探针。
 
+### 16.6 CI 迭代记录（每轮都是真跑，别重复踩）
+
+| 轮 | 耗时 | 结果 | 结论 |
+| --- | --- | --- | --- |
+| #1 | 1m41s | ❌ host configure 就崩 | 报 `X 32-bit development files not found` ⇒ host 侧 configure 必须显式 `--without-x`（以及其它 `--without-*`） |
+| #2 | 2m29s | ⚠️ host configure ✓、**目标 configure ✓**（`Finished. Do 'make' to compile Wine.`）、`make` 崩 | `No rule to make target '<host build>/tools/wine/wine'` ⇒ 目标侧需要 host 侧**完整构建**（不能只编 winebuild/widl/winegcc）；另 `--without-ldap` 是无效选项（会 warning） |
+| #3 | 运行中 | host 改为完整 `make -j4`；去掉 `--without-ldap`；加 `actions/cache`（wine 源码 + build-host） | 预期首个真正的目标是 `make` 阶段可能的驱动/依赖问题（NDK/API 28 相关） |
+
+**CI 用法**：`gh workflow run "wine-android.yml" -f wine_ref=wine-11.0 -f api_level=28 --ref main`；
+日志 `gh run view <id> --log > cache\ci-wine-N.log`；产物 artifact = `wine-android-build`
+（含 `configure-host.log`/`configure-android.log`/`make-host.log`/`make-android.log` 与 wine 树 tar）。
+注意：工作流里构建步骤是 `continue-on-error: true`，所以**失败也会上传日志**（迭代用）。
+
 
