@@ -1556,3 +1556,56 @@ w=0 h=0 ×30 ; w=31785845 h=31785532 ×9 ; w=869 h=0 ×1
   **包含 !10569/!10683 的版本（11.6+ / master）**，并采用新的分离进程模型，而不是继续给 11.0 打补丁。
 - 待确认：包含这些 merged MR 的具体 Wine 版本号；新模型的 App 集成方式（如何启动 Wine 独立进程、
   传输层接口）；我们现有 7 个补丁里哪些可以删掉。
+
+### 16.18 【决策情报】生态调研：直呈的正确实现不是 wineandroid.drv，而是 Vulkan layer + AHB
+
+第二份调研（生态/架构，含大量一手链接）要点：
+
+**① 已实现"直呈"的项目都不是用 wineandroid.drv 做 WSI**
+- **Winlator Ludashi-Plus 的 DAC（Direct Android Compositing）**：Vulkan **隐式 layer** 拦截
+  `CreateSwapchainKHR/AcquireNextImageKHR/QueuePresentKHR/WaitForPresentKHR`，帧写进 AHardwareBuffer，
+  再用 `ASurfaceTransaction_setBuffer` 交给 SurfaceFlinger（BYNC_FD 栅栏同步），**完全绕开 X11**。
+  记录明确：**LD_PRELOAD 与 ICD wrapper 两条路都失败**（`winevulkan` 把 device 级函数指针缓存在自己的
+  dispatch table 里，绕开 dlsym 链）——只有 Vulkan layer 成功。代码放在 `dlls/wineandroid.drv/vulkan_ahb.c`，
+  但 `vulkan.c` 注释为 "mostly unused when layer is active"。
+  <https://github.com/TripleJ160/Winlator-Ludashi-Plus/blob/ludashi-3.0/architecture-analysis.md>
+- **GameNative**：自研 `ASurfaceRenderer` → SurfaceFlinger（同路线）+ 自己的 Mesa fork（修 AHB import/ion heap/
+  swapchain blit）；PR "add fence and color format conversion to prevent surfaceflinger crash"。
+  <https://github.com/utkarshdalal/GameNative/pull/1620> 、<https://github.com/GameNative/mesa/pull/6>
+- WinNative：内嵌 Wayland compositor + `winewayland.drv` + dma-buf（仅 Adreno）。
+
+**② wineandroid.drv 的客观风险（维护者原话）**
+- Bugzilla **56843**：根因是 **Gralloc V1 在 Android 10+ 不可用**；修法要走 `app_process`+Binder 反向传
+  `Surface`，非常规且脆弱。<https://bugs.winehq.org/show_bug.cgi?id=56843>
+- MR9874 讨论中维护者：wineandroid **"not been maintained for a long while … at least a few years"**，
+  当前补丁 **"hiding an underlying issue rather than fixing it properly"**、怀疑存在未知 Wine 回归且
+  **无法 bisect**；同期 winex11 做了 compensating changes 而 wineandroid 被落下。
+- 窗口/WSI 驱动是绑定 `win32u` 的 unixlib ⇒ **跨 Wine 版本不可移植**（对比：Vulkan layer 挂在 loader 上，
+  与 Wine 版本耦合小）。
+
+**③ Mali（我们的机器是 Mali-G610）黑屏的成熟修法** ← 直接对应我们 B 方案当年的 DXVK 黑屏
+- **必须加 `bcn_layer`**：Mali/Xclipse/PowerVR 若无 BCn 支持会"崩溃/显存爆/**黑屏**/缺纹理"；
+  文档原话："Black screen in a game → try a different wrapper — this is the classic case the catalog exists for."
+- Winlator 的 X11 display server **硬编码 `HAL_PIXEL_FORMAT_BGRA_8888`**；**Mali 无法把该格式的 AHB
+  import 进 Vulkan**（`vkGetAndroidHardwareBufferPropertiesANDROID` 失败）⇒ 直渲永远失败、退化 blit。
+  已知 hack：对驱动谎报为 `R8B8G8A8`（物理仍 BGRA 序），且**绝不用 `vkCmdBlitImage`**（会自动 swizzle），
+  改用 `vkCmdCopyImage`。<https://leegao.github.io/winlator-internals/wrapper/2026/07/28/wsi-woes-mali.html>
+- 其它：`vkWaitForPresentKHR` 对绕过 present 的管线会**死等**（FIFO 游戏第 3 帧冻结的真凶，需在 layer 里直接返回
+  `VK_SUCCESS`）；AHB 池格式统一 `HAL_PIXEL_FORMAT_BGRA_8888` ↔ `VK_FORMAT_B8G8R8A8_UNORM`；
+  `image_count` 必须 `min(sc->image_count, pool)` 否则会命中 `VK_NULL_HANDLE` 冻在第一帧；
+  必须注入 `VK_KHR_external_fence_fd`；per-slot 命令缓冲+fence；**先开 `DXVK_LOG_LEVEL=info`** 再调 hang。
+- 注意"字节相同 wrapper"陷阱：多个 wrapper 其实是同一文件（换了会得出"没用"的错误结论）。
+
+**④ 我们的最大资产被确认是对的**：Hangover 的 benchmark 与机制论证 —— **"只模拟应用、不模拟 wine" 比
+"wine+应用一起模拟"更快**（原话："it proofs that only emulating the application is faster than emulating
+wine+application"）。我们的 C 基线正是 **native aarch64 wine（PE 侧 ARM64）** ⇒ 结构上就是 Hangover 那条路 ✓。
+（注意：x86 游戏本体仍需要 FEX/Box64 翻译，收益在于不再翻译 Wine。）
+
+**⑤ 路线选项（供决策）**
+- **A**：跟上游 master 的 wineandroid 双进程模型（已在跑 master 全量构建）。风险：上游自认该驱动腐烂、
+  补丁在掩盖根因、无法 bisect；绑定 win32u 导致每次 Wine 升级可能重做。
+- **D（新推荐）**：**保留 native aarch64 wine**，把**显示**改为两条可选后端：
+  ① 现有 X11（内嵌 Xlorie）路线 —— 用上面的 Mali 修法（bcn_layer/格式/日志）**先把 B 方案黑屏救活**；
+  ② 直呈后端 —— 照 Ludashi-Plus/GameNative 做 **Vulkan 隐式 layer + AHB + SurfaceControl**（不依赖
+  wineandroid.drv，且与 Wine 版本耦合小）。
+- **A+D**：master 的 wineandroid 作为"实验性后端"并行推进，但不作为唯一路径。
