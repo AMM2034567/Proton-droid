@@ -1494,3 +1494,35 @@ wine: 0024:trace:android:process_events CONFIG_CHANGED dpi 480
    （垃圾矩形强烈暗示 monitor info 从未初始化）；
 3. **换一个更简单的主程序**（`notepad.exe` / `winemine.exe`）验证"驱动能否画出任何窗口"，
    把"驱动渲染问题"与"winecfg 自身问题"分开。
+
+### 16.15 v12 死锁（撤销）与 v13 结果；下一步：把屏幕尺寸从"事件"改成"启动前就带进来"
+
+**v12（驱动 init 时起设备线程）真机结果：死锁，已撤销**
+```
+006c:err:sync:RtlpWaitForCriticalSection … ntdll/loader.c: loader_section … blocked by 0048, retrying (60 sec)
+```
+`0048` 是我们在 `android_init` 里启动设备线程的路径：它**持有 loader 锁**，而设备线程（→Java
+`create_desktop_window`）还要加载模块 ⇒ loader 锁自死锁。**结论：设备线程不能从驱动 init 启动。**
+
+**v13（Java 侧在设备线程同步上报尺寸）真机结果：回到 v11 行为，窗口仍是 0/垃圾尺寸**
+```
+w=0 h=0 ×30 ; w=31785845 h=31785532 ×9 ; w=869 h=0 ×1
+```
+即：v13 让上报更早了一点，但**仍然晚于"wine 创建最初那批窗口"**——因为设备线程/Java 桌面视图
+本身就是"首个窗口创建"时才起来的（v11），存在**循环依赖**：最初那批窗口必然在建尺寸之前建出来，
+它们的零/垃圾尺寸又被后续沿用。
+
+**下一步（推荐）：不要在"事件/回调"里传尺寸，改为在启动前用环境变量带进驱动**
+1. Java（`WineActivity`）在 `wine_init` 之前把真实尺寸写进 env：
+   `env.put( "WINE_ANDROID_SCREEN", width + "x" + height )`（`loadWineInternal` 里已有 env 表）；
+2. wine 侧在 `dlls/wineandroid.drv/init.c` 的 `android_init`（unix，安全——只设全局量，不启动线程）
+   读该变量，直接 `screen_width/screen_height = …`，并在**创建任何窗口之前**把监视器几何建好
+   （`init_monitors(screen_width, screen_height)` 或在 `ANDROID_UpdateDisplayDevices` 里采用该值；
+   注意 `fetch_display_metrics` 现在在"有 JVM"时直接 return，正是它返回 0 的来源）；
+3. 这样第一批窗口就有正确尺寸，屏幕上应能看到 wine 窗口。
+
+**其它已确认的事实（不要再重复踩）**：
+- 设备线程/Java 桌面视图只能从"首个窗口"起（v11）；从驱动 init 起会 loader 死锁（v12）；
+- `init_monitors()` 只在 DESKTOP_CHANGED 事件处理里被调用（window.c:447），对**已存在**窗口无效；
+- 补丁落点要小心：锚点会先在头文件的声明处命中（v12 第一版）、`dllmain.c` 不含 `android.h`（第二版）、
+  `window.c` 的函数只进 unix 库而 PE 链接不到（第三版）——这些都是本轮实际踩过的坑。
