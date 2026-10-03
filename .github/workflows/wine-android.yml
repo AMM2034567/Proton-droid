@@ -63,13 +63,18 @@ jobs:
           $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --install "ndk;27.2.12479018" "platform-tools"
           ls -d $ANDROID_HOME/ndk/*
 
-      - name: 缓存 wine 源码与 host 构建（加速迭代）
+      - name: 缓存 wine 源码与两端构建目录（加速迭代）
         uses: actions/cache@v4
         with:
           path: |
             wine-work/wine
             wine-work/build-host
+            wine-work/build-android
+          # key 精确命中 = 同脚本同 ref；否则靠 restore-keys 命中同 ref 的旧缓存，
+          # 让 configure 之前的产物复用，make 变成增量（脚本里用 .configure-opts 保证选项变了会重新 configure）。
           key: wine-cache-${{ github.event.inputs.wine_ref || 'wine-11.0' }}-${{ hashFiles('scripts/ci_build_wine_android.sh') }}
+          restore-keys: |
+            wine-cache-${{ github.event.inputs.wine_ref || 'wine-11.0' }}-
 
       - name: 构建 wine (aarch64-android)
         env:
@@ -81,7 +86,6 @@ jobs:
           sed -i 's/\r$//' scripts/ci_build_wine_android.sh
           chmod +x scripts/ci_build_wine_android.sh
           ./scripts/ci_build_wine_android.sh
-        continue-on-error: true
 
       - name: 上传构建日志与产物
         if: always()
@@ -89,8 +93,7 @@ jobs:
         with:
           name: wine-android-build
           path: |
-            wine-out/configure-android.log
-            wine-out/make-android.log
+            wine-out/*.log
             wine-out/artifacts/**
           if-no-files-found: warn
           retention-days: 14
@@ -99,7 +102,17 @@ jobs:
         if: always()
         run: |
           echo "### wine (aarch64-android) 构建" >> $GITHUB_STEP_SUMMARY
+          for f in configure-host make-host configure-android make-android; do
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "<details><summary>wine-out/$f.log (tail 25)</summary>" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            tail -25 "wine-out/$f.log" 2>/dev/null >> $GITHUB_STEP_SUMMARY || true
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            echo "</details>" >> $GITHUB_STEP_SUMMARY
+          done
           echo "" >> $GITHUB_STEP_SUMMARY
-          tail -30 wine-out/configure-android.log 2>/dev/null >> $GITHUB_STEP_SUMMARY || true
-          echo "" >> $GITHUB_STEP_SUMMARY
-          tail -30 wine-out/make-android.log 2>/dev/null >> $GITHUB_STEP_SUMMARY || true
+          echo "#### 关键错误行" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          grep -hE 'error:|Error [0-9]|configure: error|No rule to make target|\*\*\*' wine-out/*.log 2>/dev/null | head -20 >> $GITHUB_STEP_SUMMARY || true
+          echo '```' >> $GITHUB_STEP_SUMMARY

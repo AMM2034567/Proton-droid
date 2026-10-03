@@ -1051,11 +1051,17 @@ E6 去掉虚拟桌面包装，直接 `wine dxvk_probe.exe`。
 | --- | --- | --- | --- |
 | #1 | 1m41s | ❌ host configure 就崩 | 报 `X 32-bit development files not found` ⇒ host 侧 configure 必须显式 `--without-x`（以及其它 `--without-*`） |
 | #2 | 2m29s | ⚠️ host configure ✓、**目标 configure ✓**（`Finished. Do 'make' to compile Wine.`）、`make` 崩 | `No rule to make target '<host build>/tools/wine/wine'` ⇒ 目标侧需要 host 侧**完整构建**（不能只编 winebuild/widl/winegcc）；另 `--without-ldap` 是无效选项（会 warning） |
-| #3 | 运行中 | host 改为完整 `make -j4`；去掉 `--without-ldap`；加 `actions/cache`（wine 源码 + build-host） | 预期首个真正的目标是 `make` 阶段可能的驱动/依赖问题（NDK/API 28 相关） |
+| #3 | 3m5s | ❌ **host 完整 `make` 崩在编译器 ICE**（3/5、4/5 从未执行 ⇒ 零产物） | `dlls/krnl386.exe16/i386-windows/selector.o`：`clang: note: diagnostic msg` + `PLEASE ATTACH THE FOLLOWING FILES TO THE BUG REPORT` ⇒ clang ICE 编 Win16 模块。两条修复：① host/target configure 都加 `--disable-win16 --disable-tests`（Android 跨编译不需要 Win16）；② 2/5 的 `make` 原本没有 `set +e` 保护，`set -euo pipefail` 直接带走脚本，导致目标侧 configure/make 的日志全部丢失 ⇒ 已加保护并检查 `tools/wine/wine` 是否存在。另外 `continue-on-error: true` 让 workflow 顶层显示 success（用户误判「提前结束」）⇒ 已删除；上传路径改为 `wine-out/*.log`（原来只有 configure-android/make-android，host 日志没上传） |
+| #4 | 运行中 | 见下 | 预期至少跑完 host 完整构建 + 目标 configure；失败也会留下四个 `.log` |
 
 **CI 用法**：`gh workflow run "wine-android.yml" -f wine_ref=wine-11.0 -f api_level=28 --ref main`；
 日志 `gh run view <id> --log > cache\ci-wine-N.log`；产物 artifact = `wine-android-build`
-（含 `configure-host.log`/`configure-android.log`/`make-host.log`/`make-android.log` 与 wine 树 tar）。
-注意：工作流里构建步骤是 `continue-on-error: true`，所以**失败也会上传日志**（迭代用）。
+（现已含 `wine-out/*.log` 全部四个日志 + `artifacts/**`）。
+构建步骤已去掉 `continue-on-error`，所以**失败会真的变红**（不再有「顶层 success 但零产物」的假象）；
+每个 run 的 Step Summary 会附四个日志的尾部与关键错误行。
+
+**缓存策略（#4 起）**：key = `wine-cache-<ref>-<脚本 hash>`，并配 `restore-keys: wine-cache-<ref>-`
+⇒ 改脚本后仍能增量复用 `wine-work/{wine,build-host,build-android}`；脚本里用 `.configure-opts`
+戳保证 configure 选项变化时会重新 configure（避免复用旧 config.status 静默出错）。
 
 

@@ -36,23 +36,42 @@ else
 fi
 cd "$SRC" && git log --oneline -1
 
-log "2/5 构建 host 工具（x86_64 linux，跨编译 wine 需要 winebuild/widl/winegcc）"
+log "2/5 构建 host 工具（x86_64 linux，跨编译需要 winebuild/widl/winegcc 以及 tools/wine/wine）"
 mkdir -p "$HOSTBUILD" && cd "$HOSTBUILD"
 # 注意：host 侧只需要 tools/，但 configure 仍会检查 X 等依赖 —— 必须显式 --without-x 等，
-# 否则会因缺 32 位 X 开发包直接 configure: error（首轮 CI 就栽在这里）。
+# 否则会因缺 32 位 X 开发包直接 configure: error（run #1 就栽在这里）。
+# --disable-win16：run #3 的完整 host 构建崩在 dlls/krnl386.exe16（Win16，i386-windows PE）：
+#   clang ICE → make: *** [Makefile:224695: dlls/krnl386.exe16/i386-windows/selector.o] Error 1
+#   Win16 与 Android 跨编译无关，直接关掉（configure.ac 有该选项）。
+# --disable-tests：省掉回归测试，缩短 CI 时间。
 HOST_MINIMAL_OPTS=(
   --without-x --without-freetype --without-alsa --without-pulse --without-oss
   --without-coreaudio --without-cups --without-dbus --without-gnutls
   --without-sane --without-usb --without-v4l2 --without-pcsclite --without-netapi
   --without-krb5 --without-gstreamer --without-opencl
+  --disable-win16 --disable-tests
 )
-if [ ! -f config.status ]; then
+# 缓存恢复回来的 build 目录可能来自旧版脚本：选项变了就必须重新 configure。
+HOST_OPTS_STR="${HOST_MINIMAL_OPTS[*]}"
+if [ ! -f config.status ] || [ "$(cat .configure-opts 2>/dev/null || true)" != "$HOST_OPTS_STR" ]; then
   "$SRC/configure" "${HOST_MINIMAL_OPTS[@]}" 2>&1 | tee "$OUT/configure-host.log" | tail -20
+  echo "$HOST_OPTS_STR" > .configure-opts
 fi
-# 目标侧 build 需要 host 侧的 tools/wine/wine（"No rule to make target .../build-host/tools/wine/wine"），
-# 所以这里直接做一次**完整 host 构建**，别只挑几个工具。
+# 目标侧 build 需要 host 侧的 tools/wine/wine（run #2: "No rule to make target .../build-host/tools/wine/wine"），
+# 所以这里必须做**完整 host 构建**，不能只挑几个工具。
+# 但 make 失败不能直接把脚本带走（run #3 就是这样丢掉 3/5、4/5 的全部日志）：先记录退出码。
+set +e
 make -j"$JOBS" 2>&1 | tee "$OUT/make-host.log" | tail -10
+MAKE_HOST_RC=${PIPESTATUS[0]}
+set -e
+echo "host make 退出码: $MAKE_HOST_RC"
 ls -l tools/wine/wine tools/winebuild/winebuild tools/widl/widl 2>/dev/null || true
+for t in tools/wine/wine tools/winebuild/winebuild tools/widl/widl; do
+  if [ ! -e "$t" ]; then
+    echo "!! host 工具缺失: $t（完整日志见 $OUT/configure-host.log / $OUT/make-host.log）"
+    exit 1
+  fi
+done
 
 log "3/5 交叉配置 aarch64-linux-android"
 export CC="$TOOLCHAIN/bin/aarch64-linux-android${ANDROID_API}-clang"
@@ -66,18 +85,23 @@ export LDFLAGS="--sysroot=$TOOLCHAIN/sysroot"
 "$CC" --version | head -1
 
 mkdir -p "$TGTBUILD" && cd "$TGTBUILD"
-if [ ! -f config.status ]; then
-  "$SRC/configure" \
-    --host=aarch64-linux-android \
-    --with-wine-tools="$HOSTBUILD" \
-    --prefix="$PREFIX" \
-    --without-x \
-    --without-freetype \
-    --without-alsa --without-pulse --without-oss --without-coreaudio \
-    --without-cups --without-dbus --without-gnutls \
-    --without-sane --without-usb --without-v4l2 --without-pcsclite \
-    --without-netapi --without-krb5 --without-gstreamer --without-opencl \
-    2>&1 | tee "$OUT/configure-android.log" | tail -40
+# --disable-win16/--disable-tests 同上：Android 上不需要 Win16，也省时间。
+TGT_OPTS=(
+  --host=aarch64-linux-android
+  --with-wine-tools="$HOSTBUILD"
+  --prefix="$PREFIX"
+  --without-x
+  --without-freetype
+  --without-alsa --without-pulse --without-oss --without-coreaudio
+  --without-cups --without-dbus --without-gnutls
+  --without-sane --without-usb --without-v4l2 --without-pcsclite
+  --without-netapi --without-krb5 --without-gstreamer --without-opencl
+  --disable-win16 --disable-tests
+)
+TGT_OPTS_STR="${TGT_OPTS[*]}"
+if [ ! -f config.status ] || [ "$(cat .configure-opts 2>/dev/null || true)" != "$TGT_OPTS_STR" ]; then
+  "$SRC/configure" "${TGT_OPTS[@]}" 2>&1 | tee "$OUT/configure-android.log" | tail -40
+  echo "$TGT_OPTS_STR" > .configure-opts
 fi
 
 log "4/5 编译（这一步最久，CI 上约 20~60 分钟）"
