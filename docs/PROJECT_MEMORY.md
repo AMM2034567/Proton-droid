@@ -1794,3 +1794,28 @@ Adreno→Turnip（BCn 关模拟）；Mali/Xclipse→厂商驱动 + wrapper + `bc
 全部 X11 唯一；并统一要求：targetSdk 28 + 关闭子进程限制 + 电池不受限制。
 出处汇总：Bannerlator wrapper 指南、leegao《WSI Woes on Mali》、GameNative PR#1673、ExynosTools、WinXclipse CHANGELOG、
 radv-xclipse、（Xclipse 实测 issue：#134 / #307 / #326 / #238 / leegao#101 / mobox#196）。
+### 16.24 ✅ D 路线里程碑 2：X11 运行时打包成功；上轮"失败"的真因是文件名大小写
+
+**run 37173416481 全绿**（`with_x=1`）。清单（`wine-out/x11-runtime.log`，由"纯日志"小产物取回）给出**事实**：
+已打包 11 个文件：`libX11.so` + `libX11.so.6`(软链 ✓) / `libXau.so` / `libXcursor.so` / `libXext.so` /
+`libXfixes.so` / `libXi.so` / `libXrandr.so` / `libXrender.so` / `libandroid-support.so` / `libxcb.so` ✓
+（`X11ROOT/usr/lib` 里还有一堆 `libxcb-*.so` 扩展，以及 `libX11-xcb.so`）
+
+**上轮失败的真因**：我把 `libXdmcp.so` 写成了小写 `libxdmcp.so` ✗（实际文件是大写 D），
+于是硬断言 `[ -e ... ] || exit 1` 永远失败 ⇒ **把成功构建判成失败**。
+`libandroid-support.so` 其实一直存在 ✓（我没有核实就断言它缺失，正是 §17 说的"凭印象"）。
+修复：拷贝清单改用正确大小写 `libXdmcp.so` ✓。
+
+**D 路线当前产物（都已 CI 产出）**：
+- `wine-android-arm64-install.tar.gz`：`arm64-v8a/{bin,lib}` + `share/wine` + **`lib/wine/aarch64-unix/winex11.so`** ✓
+- `x11-runtime-arm64.tar.gz`：X11 运行时 DSO（上述 11 个 + locale）
+- 小增量：`winex11.so`/`winex11.drv`/全部 unix 库 + `x11-runtime-arm64.tar.gz`
+
+**下一步（D 路线第 3 步：App 侧）**：
+1. 解包安装树 + X11 运行时到 `filesDir`；X11 DSO 放 `arm64-v8a/lib/`（进 `LD_LIBRARY_PATH`），
+   并设 `XLOCALEDIR=<filesDir>/.../share/X11/locale`；
+2. 内嵌 X（`libXlorie.so`）+ `winex11.drv`；`DISPLAY=:0`；
+3. **Mali 修法**（我们的 PGZ110）：`bcn_layer`、`BGRA AHB` 的已知 hack、先开 `DXVK_LOG_LEVEL=info`；
+4. 三个真机必验点：① Termux 版 libX11 的 socket 路径是 `@TERMUX_PREFIX@/tmp/.X11-unix/X`（不是 `/tmp/...`）；
+   ② `share/X11/locale` + `XLOCALEDIR`；③ **开发者选项"Disable child process restrictions"**（phantom process killer
+   会杀 wine 子进程，signal 9 —— 见 §16.23）。
