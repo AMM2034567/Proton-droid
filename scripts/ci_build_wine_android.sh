@@ -137,7 +137,7 @@ done
 if [ "${WITH_X:-0}" = "1" ]; then
   X11ROOT="${X11_SYSROOT:-$WORK/x11sysroot}"
   TERMUX_MIRROR="${TERMUX_MIRROR:-https://packages.termux.dev/apt/termux-main}"
-  X11_PKGS="xorgproto libx11 libxext libxfixes libxcursor libxi libxrender libxrandr libxcb libxau libXdmcp libandroid-support"
+  X11_PKGS="xorgproto libx11 libxext libxfixes libxcursor libxi libxrender libxrandr libxcb libxau libxdmcp libandroid-support"
   log "2.8/5 准备 bionic X11 sysroot（Termux .deb → $X11ROOT）"
   mkdir -p "$X11ROOT" "$WORK/x11deb"
   wget -q "$TERMUX_MIRROR/dists/stable/main/binary-aarch64/Packages.gz" -O "$WORK/Packages.gz"
