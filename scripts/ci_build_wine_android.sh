@@ -318,11 +318,21 @@ if [ "${WITH_X:-0}" = "1" ]; then
   fi
   tar czf "$OUT/artifacts/x11-runtime-arm64.tar.gz" -C "$OUT/artifacts/x11-runtime" . 2>/dev/null || true
   ls -l "$OUT/artifacts/x11-runtime/lib" | head -20 || true
-  # 硬断言：X11 运行时必须齐（缺 libX11/libXext 说明 sysroot 不完整）
-  for f in libX11.so libXext.so libxcb.so libXau.so libXdmcp.so libandroid-support.so; do
-    [ -e "$OUT/artifacts/x11-runtime/lib/$f" ] || { echo "!! X11 运行时缺 $f"; exit 1; }
+  # 清单写进 wine-out/*.log（"纯日志"小产物会收走）⇒ 下次能直接看到 Termux 实际提供了哪些文件。
+  # 教训（§16.22）：之前凭印象硬断言 libandroid-support.so 等一定存在，把**已经成功**的构建判成了失败。
+  {
+    echo "=== x11-runtime 清单（X11ROOT=$X11ROOT）==="
+    echo "--- 已打包 ---"; ls -l "$OUT/artifacts/x11-runtime/lib" 2>/dev/null || true
+    echo "--- X11ROOT/usr/lib 实际内容 ---"
+    ls -l "$X11ROOT"/usr/lib/libX* "$X11ROOT"/usr/lib/libx* "$X11ROOT"/usr/lib/libandroid* 2>/dev/null || true
+    echo "--- 关键文件定位 ---"
+    find "$X11ROOT" \( -name 'libX11.so*' -o -name 'libandroid-support*' -o -name 'libxcb.so*' \) 2>/dev/null | head -20 || true
+  } > "$OUT/x11-runtime.log" 2>&1
+  # 只对链接期 NEEDED 的 libX11/libXext 硬断言；其余缺失只告警（真机上会 dlopen 失败或静默降级）
+  for f in libX11.so libXext.so; do
+    [ -e "$OUT/artifacts/x11-runtime/lib/$f" ] || { echo "!! X11 运行时缺关键 $f（详见 wine-out/x11-runtime.log）"; exit 1; }
   done
-  echo "✓ X11 运行时打包完成: $(ls "$OUT/artifacts/x11-runtime/lib" | wc -l) 个 .so"
+  echo "✓ X11 运行时打包完成: $(ls "$OUT/artifacts/x11-runtime/lib" 2>/dev/null | wc -l) 个文件（清单见 wine-out/x11-runtime.log）"
 fi
 
 ls -lh "$OUT/artifacts" || true
