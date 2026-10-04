@@ -1741,3 +1741,21 @@ Termux 包名与下载 URL、以及 CI 的最小改动（≤6 处）。
 3. **两个必须真机验证的点**（CI 覆盖不到）：① Termux 版 libX11 的 xtrans 补丁把 X socket 路径改成
    `@TERMUX_PREFIX@/tmp/.X11-unix/X`（不是 `/tmp/.X11-unix/X`）⇒ 需软链或确认抽象 socket 兜底；
    ② `share/X11/locale` 必须随包部署 + `XLOCALEDIR`。
+### 16.22 X11 运行时打包的失败是"我的硬断言"造成的（已定位，待修）
+
+**取证过程（用新加的 wine-android-logs 小产物）**：
+- `make-android.log` 末行：`Wine build complete.` ✓
+- `make-install.log` 含 `dlls/winex11.drv/winex11.so` ✓
+⇒ **构建与安装都成功了**；失败发生在脚本 5.5/5 我新加的 X11 运行时打包段：
+  我凭印象硬断言 `libX11.so/libXext.so/libxcb.so/libXau.so/libxdmcp.so/libandroid-support.so`
+  必须存在（缺则 `exit 1`），但 Termux 包里这些文件名/位置未必如我所想 ⇒ **把成功判成了失败**。
+  （又一次印证 §17 工作原则：不要凭印象写。）
+
+**待落地的修复**（脚本 `scripts/ci_build_wine_android.sh` 第 319-325 行那一块）：
+1. 去掉对 `libxcb/libXau/libxdmcp/libandroid-support` 的硬断言，只保留链接期 NEEDED 的 `libX11.so/libXext.so`；
+2. 其余缺失只告警；
+3. 把 `$X11ROOT/usr/lib` 的**实际内容**与关键文件定位写进 `wine-out/x11-runtime.log`
+   （新加的"纯日志"小产物会收走）⇒ 下一轮就能按真实清单处理，不再靠猜。
+
+**工具层的坑（下次直接用脚本改，不要反复用编辑工具）**：`scripts/ci_build_wine_android.sh` 行尾/空白
+与编辑工具的匹配反复不成功 ⇒ 用 Node 脚本按 `indexOf/slice` 精确替换（本文件已多次成功这样做）。
