@@ -1759,3 +1759,38 @@ Termux 包名与下载 URL、以及 CI 的最小改动（≤6 处）。
 
 **工具层的坑（下次直接用脚本改，不要反复用编辑工具）**：`scripts/ci_build_wine_android.sh` 行尾/空白
 与编辑工具的匹配反复不成功 ⇒ 用 Node 脚本按 `indexOf/slice` 精确替换（本文件已多次成功这样做）。
+
+### 16.23 三 SoC（骁龙/联发科/Exynos）适配调研（子代理核实，均附链接）
+
+**CPU/ABI 层三者一致**：wine 本体是 native ARM64（unix+PE）⇒ 一套 APK 通吃；x86 游戏一律走 FEX/Box64
+（与厂商无关）；32 位游戏走 wow64 + wowbox64。
+
+**GPU 层差异（D 路线的关键）**：
+| | Adreno（骁龙） | Mali（联发科 / Exynos-Mali 990/2100/1280/1380） | Xclipse（RDNA，2200/2400/530/540/550/920/940） |
+|---|---|---|---|
+| Vulkan 驱动 | **Mesa Turnip**（默认，可换新版） | **仅厂商 blob** | **仅厂商 blob**（+ ExynosTools 层；实验性 radv-xclipse 只支持 530/920） |
+| wrapper/BCn | 需要 wrapper；**BCn 硬件原生，必须关掉模拟**（否则更慢） | **必须 wrapper + `bcn_layer`**（无硬件 BC） | **必须 wrapper + BCn**，但 **BC1–3 原生、只需补 BC4–7** |
+| AHB/格式 | 可 import `BGRA_8888` ⇒ **可零拷贝直渲** | **不能 import BGRA_8888** ⇒ 强制 blit 回退（每帧多一拷贝） | 未发现"不能 import BGRA"证据；但 **AHB-backed image 必须强制加 `VK_IMAGE_USAGE_SAMPLED_BIT`**（ANGLE Samsung 规则）；dynamic rendering 在 Samsung 上被整体禁用 |
+| X11 vs Wayland | 都行（Wayland/HDR10 实验性仅 Adreno） | **只能 X11** | **只能 X11**；且 Xclipse 上 wined3d 的 Vulkan swapchain 会 "Unsupported alpha mode" ⇒ **必须把 wined3d 钉到 GL 渲染器** |
+
+**Xclipse 额外必须做的（都有出处，见下）**：
+1. wined3d 钉 GL 渲染器；EGL 显式要 ES3.1；GLES compute 里 sampler/image 显式 highp；
+2. 只对 BC4–7 转码（BC1–3 原生），并按 Xclipse 真实能力回答 `vkGetPhysicalDeviceFormatProperties`；
+3. **避开会触发 tracked-BCN-copy 的新 wrapper**（RE3 在 Xclipse 100% 死锁）⇒ 用老 Winlator Mali wrapper+layer，导出 `WRAPPER_BCN_ASTC=1`；
+4. **不要开 native rendering / Wayland / 帧生成**（Xclipse 530 实测会**重启设备**、帧生成无效）；
+5. Vulkan 请求 clamp 回 1.3（wrapper 链路只到 1.3）；显存按 WGP 分档（只通过 dxvk.conf 报告值）。
+
+**固件层（对我们直接相关）**：
+- **targetSdk 必须保持 28** ✓（否则 app 私有目录 execve 被 SELinux 拦，`error=13 Permission denied`；
+  WinXclipse 有实测记录 https://github.com/avavo/WinXclipse/blob/main/CHANGELOG.md ）。
+- **⚠️ Phantom process killer（Android 11–14+）会杀 wine/X11 的子进程（表现为 signal 9）**：
+  需开发者选项 **"Disable child process restrictions"**（**Samsung One UI 已验证有效**）或 ADB 调
+  `max_phantom_processes`。**这极可能解释我们之前观察到的"子进程（explorer/winecfg）静默消失"** ✗→✓
+  参考 https://github.com/xodiosx/XoDos2/blob/main/signal9fix.md
+- 未发现"三星比小米/一加更严的 exec/Knox 限制"的证据 ⇒ 不必为三星单独做 Knox 适配。
+
+**结论/整改方向**：D 路线需要一层**按 GPU 选择的设置**（类似 Winlator 的 wrapper/renderer 档位）：
+Adreno→Turnip（BCn 关模拟）；Mali/Xclipse→厂商驱动 + wrapper + `bcn_layer`（Xclipse 另有上述 5 条）；
+全部 X11 唯一；并统一要求：targetSdk 28 + 关闭子进程限制 + 电池不受限制。
+出处汇总：Bannerlator wrapper 指南、leegao《WSI Woes on Mali》、GameNative PR#1673、ExynosTools、WinXclipse CHANGELOG、
+radv-xclipse、（Xclipse 实测 issue：#134 / #307 / #326 / #238 / leegao#101 / mobox#196）。
