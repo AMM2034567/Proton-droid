@@ -120,6 +120,16 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
 
+      # 只含日志的小产物（几 MB）：整包 351MB 下载慢，而 API 抓日志会被截断 ⇒ 失败时靠这个定位
+      - name: 上传纯日志（小产物）
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: wine-android-logs
+          path: wine-out/*.log
+          if-no-files-found: warn
+          retention-days: 14
+
       # C2 真机迭代用：整包 351MB 下载太慢，这里单独给一份"只含 unix 库 + android 驱动"的小增量（~10MB），
       # 改动 wine 源码后只要把它解到设备上覆盖对应文件即可验证，不必重推 174MB 载荷。
       - name: 打包增量产物（unix 库 + wineandroid.drv）
