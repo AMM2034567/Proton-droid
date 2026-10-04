@@ -1819,3 +1819,39 @@ radv-xclipse、（Xclipse 实测 issue：#134 / #307 / #326 / #238 / leegao#101 
 4. 三个真机必验点：① Termux 版 libX11 的 socket 路径是 `@TERMUX_PREFIX@/tmp/.X11-unix/X`（不是 `/tmp/...`）；
    ② `share/X11/locale` + `XLOCALEDIR`；③ **开发者选项"Disable child process restrictions"**（phantom process killer
    会杀 wine 子进程，signal 9 —— 见 §16.23）。
+
+### 16.25 D 路线第 3 步（App 侧）实现方案 + 已发布的产物 URL
+
+#### 已发布的 release 资产（tag `wine-android-11.0-r1`，可直接给 App 拉）
+| 资产 | 大小 | 用途 |
+|---|---|---|
+| `x11-runtime-arm64-11.0-r1.tar.gz` | 0.99MB | X11 运行时：11 个 DSO（libX11(+.so.6)/libXext/libxcb/libXau/libXdmcp/libandroid-support/libXfixes/libXcursor/libXi/libXrender/libXrandr）+ `share/X11/locale` |
+| `wine-unix-x11-11.0-r1.tar.gz` | 8.19MB | 覆盖包：`aarch64-unix/{winex11.so,…}` + `aarch64-windows/winex11.drv`（叠在旧安装树之上即可得到"带 X"的 wine） |
+| `wine-android-arm64-11.0-r1-install.tar.gz` | 174MB | 原安装树（**不含 winex11** ⇒ 必须叠加上面那个覆盖包） |
+
+URL 形式：`https://github.com/AMM2034567/Proton-droid/releases/download/wine-android-11.0-r1/<asset>`
+
+#### App 侧要做的事（按顺序）
+1. **载荷（`WineAndroidPayload.kt`）**：
+   - 新增第二/第三份载荷（上述两个 tar）；解包目标：
+     - 覆盖包 → `files/arm64-v8a/lib/wine/`（含 `aarch64-unix`、`aarch64-windows`）
+     - X11 运行时 → `files/arm64-v8a/lib/`（**拍平**，DSO 直接放这一层）+ `files/share/X11/locale`
+   - 现有 tar 读取器（512 头/GNU L/PAX/软链）可复用 ✓；注意保留软链 `libX11.so.6 -> libX11.so`
+   - marker 判据加上 `winex11.so` 存在
+2. **显示后端（`GameViewActivity` 的 `DisplayBackend` 分流已就绪 ✓）**：
+   - `android`（C 方案）→ 保持现在的 `WineActivity`（wineandroid.drv）
+   - 新增 **`x11` 走新链路**：启动内嵌 X（`XServer.ensureStarted`）→ 用 `NativeBridge.forkAndExec` 起 **native bionic wine**
+     （`files/arm64-v8a/lib/wine/aarch64-unix/wine`，环境：`DISPLAY=:0`、`WINEPREFIX`、`WINEDLLPATH`、
+     `LD_LIBRARY_PATH=<files>/arm64-v8a/lib:<files>/arm64-v8a/lib/wine/aarch64-unix`、`XLOCALEDIR=<files>/share/X11/locale`、
+     可选 `WINEDEBUG`）
+   - 目标程序：`c:\windows\system32\winecfg.exe`（冒烟）或游戏 exe
+3. **Mali 修法（PGZ110 = Mali-G610）**：`bcn_layer`（Vulkan 层）、BGRA/RGBA AHB 的已知 hack、
+   先 `DXVK_LOG_LEVEL=info`；这些属于 Vulkan/DXVK 阶段，冒烟阶段先确认"X + wine 能出窗口"
+4. **真机前置**：开发者选项 **"Disable child process restrictions"**（phantom process killer 会杀子进程，§16.23）；
+   `targetSdk` 保持 28 ✓；电池不受限制
+
+#### 三个必须真机验证的点（CI 覆盖不到）
+1. **X socket 路径**：Termux 版 libX11 带 xtrans 补丁 ⇒ 路径是 `@TERMUX_PREFIX@/tmp/.X11-unix/X0`（**不是** `/tmp/.X11-unix/X0`）
+   ⇒ 需要软链（`files/arm64-v8a/tmp` 与 Xlorie 的 socket 目录对齐）或确认抽象 socket 兜底
+2. **`share/X11/locale` + `XLOCALEDIR`**（否则 `XSupportsLocale`/`xim_init` 降级）
+3. `winex11.so` 的 `dlopen` 依赖链（libX11/libXext/libxcb/libXau/libXdmcp/libandroid-support）都在 `LD_LIBRARY_PATH` 里
