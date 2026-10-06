@@ -1855,3 +1855,40 @@ URL 形式：`https://github.com/AMM2034567/Proton-droid/releases/download/wine-
    ⇒ 需要软链（`files/arm64-v8a/tmp` 与 Xlorie 的 socket 目录对齐）或确认抽象 socket 兜底
 2. **`share/X11/locale` + `XLOCALEDIR`**（否则 `XSupportsLocale`/`xim_init` 降级）
 3. `winex11.so` 的 `dlopen` 依赖链（libX11/libXext/libxcb/libXau/libXdmcp/libandroid-support）都在 `LD_LIBRARY_PATH` 里
+
+### 16.26 ✅ D 路线第 3 步-2 接线完成：DisplayBackend.NATIVE_X11 与 GameViewActivity 原生分支落地
+
+**一、检索与取证结果（按 §17 工作原则，反汇编与 ELF NEEDED 铁证）**：
+
+1. **Termux X11 socket 路径取证**：
+   - 从 `cache/x11-runtime-arm64-11.0-r2.tar.gz` 提取 `libxcb.so`，反汇编 `xcb_connect_to_display_with_auth_info`（`0x1b570`）与 `xcb_parse_display`（`0x1b330`）：
+     - `snprintf` 格式化基准路径在 `.rodata` `0xb6c8` 处确为 `/data/data/com.termux/files/usr/tmp/.X11-unix/X`（即 `@TERMUX_PREFIX@/tmp/.X11-unix/X%d`）；
+     - 汇编流程：先尝试抽象 socket `@/data/data/com.termux/files/usr/tmp/.X11-unix/X0`（`sun_path[0]='\0'`，偏移 `0x1b6d4`）；若失败再尝试文件系统 socket（偏移 `0x1b750`）；
+     - 宿主 `libXlorie.so` 在 `JNI_OnLoad` 中读取 `getenv("TMPDIR")`，创建的文件系统 socket 位于 `<filesDir>/tmp/.X11-unix/X0`；
+     - 汇编分析 `xcb_parse_display`：若 `DISPLAY` 字符串包含 `/`（如 `DISPLAY=unix:/data/data/com.protondroid/files/tmp/.X11-unix/X0:0`），XCB 会跳过默认路径构造，直接连接该指定 unix socket；
+     - 保持默认 `DISPLAY=:0`，真机验证时若报错 `Can't open display :0` 可直接通过软链或传带路径的 DISPLAY 解决（待真机验证）。
+2. **`share/X11/locale` 与 `XLOCALEDIR` 取证**：
+   - 核实 `x11-runtime-arm64-11.0-r2.tar.gz` 包含 50+ 个 locale 目录及 `locale.alias`、`locale.dir`；
+   - 由 `WineAndroidPayload.installX11Runtime` 解压至 `<filesDir>/share/X11/locale`；环境变量注入 `XLOCALEDIR=<filesDir>/share/X11/locale`，避免 `XSupportsLocale` 与 `xim_init` 降级。
+3. **`winex11.so` 的 dlopen 依赖链完整闭包取证**：
+   - 使用 `llvm-readelf -d` 逐层核验 ELF `DT_NEEDED`：
+     - `winex11.so` → `ntdll.so`、`win32u.so`（位于 `arm64-v8a/lib/wine/aarch64-unix/`）、`libX11.so`、`libXext.so`（位于 `arm64-v8a/lib/`）；
+     - `libX11.so` → `libxcb.so`、`libandroid-support.so`（位于 `arm64-v8a/lib/`）；
+     - `libxcb.so` → `libXau.so`、`libXdmcp.so`（位于 `arm64-v8a/lib/`；r2 包中已包含 18,920 字节的 `libXdmcp.so`）；
+     - `libXext.so` → `libX11.so`；
+   - 全部 DSO 均被拍平放置于 `arm64-v8a/lib/` 或 `arm64-v8a/lib/wine/aarch64-unix/`，并且均已包含在 `LD_LIBRARY_PATH`（`<files>/arm64-v8a/lib:<files>/arm64-v8a/lib/wine/aarch64-unix:<nativeLibDir>`）中，Bionic 链接器可全量命中。
+
+**二、代码实现与接线**：
+1. `DisplayBackend.kt`：新增 `NATIVE_X11 = "native-x11"`、`isNativeX11(context)`、`set(context, "native-x11")`；
+2. `GameViewActivity.kt`：
+   - 新增 `native-x11` 后端分支：拉起内嵌 X（`XServer.ensureStarted`），`LorieView` 就绪后启动原生 Wine；
+   - 载荷校验：异步调用 `WineAndroidPayload.ensureX11Installed(context)`，绝不阻塞 UI 线程；
+   - 进程执行：通过 `NativeBridge.forkAndExec` 启动 `<files>/arm64-v8a/lib/wine/aarch64-unix/wine`，参数默认为 `["c:\\windows\\system32\\winecfg.exe"]`（或游戏路径）；
+   - 环境注入：`DISPLAY=:0`、`WINEPREFIX=<files>/prefix-x11`、`WINEDLLPATH=<files>/arm64-v8a/lib/wine`、`LD_LIBRARY_PATH`、`XLOCALEDIR`、`WINEDEBUGLOG=<files>/log-x11`、`WINEDEBUG`(读 `files/winedebug`)、`TMPDIR=<files>/tmp`；
+   - 进程生命周期：通过 `NativeBridge.waitPid` 监控退出并上报，在 `onDestroy` 与 `btnExit` 中调用 `NativeBridge.killProcess` 释放进程树；
+   - 完全保留现有 `x11`（B 方案 proot wine）与 `android`（C 方案 WineActivity）逻辑，互不影响。
+
+**三、验收结果**：
+- 本地离线编译：`.\gradlew.bat :app:assembleDebug --offline --console=plain` 成功（16s，BUILD SUCCESSFUL），APK 生成于 `app/build/outputs/apk/debug/app-debug.apk`；
+- 未影响现存分支，代码与架构符合 D 路线规范。
+
